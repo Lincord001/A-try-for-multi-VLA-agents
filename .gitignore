@@ -7,6 +7,7 @@ omy_pnp
 omy_pnp_language
 .venv
 wandb
+README.md
 
 # ========================
 # 2. 新增：针对你项目的大文件忽略规则 (使用通配符)
