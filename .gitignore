@@ -1,9 +1,50 @@
+# ========================
+# 1. 你的特定项目规则 (保留项)
+# ========================
 lerobot
-demo_data
-demo_data_language
-ckpt
 asset/objaverse/plate_11
 omy_pnp
+omy_pnp_language
 .venv
 wandb
-omy_pnp_language
+
+# ========================
+# 2. 新增：针对你项目的大文件忽略规则 (使用通配符)
+# ========================
+
+# 忽略 PaliGemma 权重文件夹
+PaliGemmaWeights/
+
+# 忽略所有资产文件（已迁移至百度网盘）
+asset/
+
+# 忽略所有以 ckpt 开头的文件夹
+# (这就涵盖了 ckpt, ckpt_1, ckpt_2... 以后你新建 ckpt_99 也会自动被忽略)
+ckpt*/
+
+# 忽略所有以 demo_data 开头的文件夹
+# (这就涵盖了 demo_data, demo_data_arm, demo_data_base_ver_3 等所有变体)
+demo_data*/
+
+# ========================
+# 3. 通用 Python/数据科学 安全规则 (兜底)
+# ========================
+
+# 忽略 Python 运行时自动生成的缓存 (必须忽略，否则全是垃圾文件)
+__pycache__/
+*.py[cod]
+
+# 忽略 Jupyter Notebook 的自动备份点 (必须忽略)
+.ipynb_checkpoints/
+
+# 忽略任何位置漏网的模型权重文件
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.h5
+*.onnx
+
+# 系统临时文件
+.DS_Store
+asset/

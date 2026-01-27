@@ -136,10 +136,15 @@ def train(cfg: TrainPipelineConfig):
         eval_env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
 
     logging.info("Creating policy")
+#    if cfg.policy.type == "pi0":
+#        cfg.policy.pretrained_path = 'google/paligemma-3b-pt-224'
+#    elif cfg.policy.type == 'smolvla':
+#        cfg.policy.pretrained_path = 'lerobot/smolvla_base'
     if cfg.policy.type == "pi0":
-        cfg.policy.pretrained_path = 'lerobot/pi0'
+        cfg.policy.pretrained_path = './PaliGemmaWeights/paligemma-3b-pt-224'
     elif cfg.policy.type == 'smolvla':
         cfg.policy.pretrained_path = 'lerobot/smolvla_base'
+
     policy = make_policy(
         cfg=cfg.policy,
         ds_meta=dataset.meta,
