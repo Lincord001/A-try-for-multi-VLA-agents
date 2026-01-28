@@ -3,62 +3,137 @@ import numpy as np
 import torch
 import time
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from mujoco_env.y_env3 import SimpleEnv3
+from mujoco_env.y_env4 import SimpleEnv4
 from mujoco_env.utils import add_title_to_img
 
 # ================= 配置区域 =================
-#REPO_NAME = 'omy_base_data'
-#ROOT = "./demo_data_base"
-REPO_NAME = 'omy_base_data_clean'
-ROOT = './demo_data_base_clean'
+# 🔥 模式选择：'base' 或 'arm'
+MODE = 'arm'  # 切换这里来选择审阅底盘数据还是机械臂数据
 
-XML_PATH = './asset/example_scene_y3.xml'
+# 数据集配置（会根据 MODE 自动选择）
+DATASET_CONFIG = {
+    'base': {
+        'repo_name': 'demo_data_base_v4',
+        'root': './demo_data_base_v4',
+        'image_keys': ['front', 'left', 'right'],  # 底盘模式的相机
+    },
+    'arm': {
+        'repo_name': 'demo_data_arm_v4',
+        'root': './demo_data_arm_v4',
+        'image_keys': ['agent', 'wrist', 'back'],  # 机械臂模式的相机
+    }
+}
+
+XML_PATH = './asset/example_scene_y4.xml'
 FPS = 20  # 录制时的帧率
-LOOP_EPISODE = 51  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
+LOOP_EPISODE = 0  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
 # ===========================================
 
-class VisualizerEnv(SimpleEnv3):
+
+class VisualizerEnv(SimpleEnv4):
+    def __init__(self, xml_path, mode='base', **kwargs):
+        super().__init__(xml_path, **kwargs)
+        self.vis_mode = mode
+        self.image_keys = DATASET_CONFIG[mode]['image_keys']
+    
     def render(self, idx=0, rel_time=0.0):
-        # 1. 3D 背景
+        # =================== 🔥 图像 Overlay 显示逻辑 🔥 ===================
+        # 与 y_env4.py 的 render() 布局保持一致
+        
+        if self.vis_mode == 'arm':
+            # === Arm 模式布局 (与 y_env4.py 一致) ===
+            # rec_img_0 = agent, rec_img_1 = wrist, rec_img_2 = back
+            
+            # 1. 右上角: Agent 全局视角 (主视角)
+            if hasattr(self, 'rec_img_0'):
+                img = add_title_to_img(self.rec_img_0, text="[REC] Agent View", shape=(640, 480))
+                self.env.viewer_rgb_overlay(img, loc='top right')
+            
+            # 2. 右下角: Wrist 手腕视角
+            if hasattr(self, 'rec_img_1'):
+                img = add_title_to_img(self.rec_img_1, text="[REC] Wrist View", shape=(640, 480))
+                self.env.viewer_rgb_overlay(img, loc='bottom right')
+            
+            # 3. 左上角: Back 后视图
+            if hasattr(self, 'rec_img_2'):
+                img = add_title_to_img(self.rec_img_2, text="[REC] Back View", shape=(640, 480))
+                self.env.viewer_rgb_overlay(img, loc='top left')
+        
+        else:
+            # === Base 模式布局 (与 y_env4.py 一致) ===
+            # rec_img_0 = front, rec_img_1 = left, rec_img_2 = right
+            
+            # 1. 右上角: Front 正前方 (主视角)
+            if hasattr(self, 'rec_img_0'):
+                img = add_title_to_img(self.rec_img_0, text="[REC] Front View", shape=(640, 480))
+                self.env.viewer_rgb_overlay(img, loc='top right')
+            
+            # 2. 左上角: Left 左侧视角
+            if hasattr(self, 'rec_img_1'):
+                img = add_title_to_img(self.rec_img_1, text="[REC] Left View", shape=(640, 480))
+                self.env.viewer_rgb_overlay(img, loc='top left')
+            
+            # 3. 右下角: Right 右侧视角
+            if hasattr(self, 'rec_img_2'):
+                img = add_title_to_img(self.rec_img_2, text="[REC] Right View", shape=(640, 480))
+                self.env.viewer_rgb_overlay(img, loc='bottom right')
+
+        # =================== 🎥 主屏幕摄像头逻辑 🔥 ===================
+        # 与 y_env4.py 的摄像头切换逻辑一致
+        
         if self.env.viewer is not None:
-            self.env.viewer.cam.type = 2 
-            try:
-                cam_id = self.env.model.camera('tb3_view').id
-                self.env.viewer.cam.fixedcamid = cam_id
-            except: pass
+            if self.vis_mode == 'base':
+                # Base 模式：使用 tb3_chase 跟随摄像头
+                self.env.viewer.cam.type = 2  # 固定摄像头模式
+                try:
+                    cam_id = self.env.model.camera('tb3_chase').id
+                    self.env.viewer.cam.fixedcamid = cam_id
+                except Exception:
+                    # 回退：跟踪模式
+                    self.env.viewer.cam.type = 1
+                    try:
+                        self.env.viewer.cam.trackbodyid = self.env.model.body('tb3_base').id
+                    except:
+                        pass
+            else:
+                # Arm 模式：使用自由视角（可鼠标拖动旋转）
+                self.env.viewer.cam.type = 0  # 自由摄像头
+                self.env.viewer.cam.trackbodyid = -1  # 不跟踪任何物体
 
-        # 2. Overlay 图像
-        if hasattr(self, 'rec_img_front'):
-            img_front = add_title_to_img(self.rec_img_front, text="[REC] Front (Main)", shape=(640, 480))
-            self.env.viewer_rgb_overlay(img_front, loc='top left')
-
-        if hasattr(self, 'rec_img_left'):
-            img_left = add_title_to_img(self.rec_img_left, text="[REC] Left", shape=(320, 240))
-            self.env.viewer_rgb_overlay(img_left, loc='top right')
-
-        if hasattr(self, 'rec_img_right'):
-            img_right = add_title_to_img(self.rec_img_right, text="[REC] Right", shape=(320, 240))
-            self.env.viewer_rgb_overlay(img_right, loc='bottom right')
-
-        # 3. 显示时间信息 (核心修改)
-        # 覆盖原本的 Sim Time，显示当前 Episode 的相对时间
+        # =================== 显示时间信息 ===================
+        mode_label = "🚗 BASE" if self.vis_mode == 'base' else "🦾 ARM"
         self.env.viewer_text_overlay(
-            text1=f'Ep {idx} | Rel Time: {rel_time:.2f}s', 
+            text1=f'{mode_label} | Ep {idx} | Rel Time: {rel_time:.2f}s', 
             text2=f'Total Sim: {self.env.data.time:.2f}s'
         )
         
         self.env.render()
 
+
 def main():
-    print(f"Loading dataset from {ROOT}...")
+    # 根据 MODE 获取配置
+    config = DATASET_CONFIG[MODE]
+    repo_name = config['repo_name']
+    root = config['root']
+    image_keys = config['image_keys']
+    
+    print(f"=" * 50)
+    print(f"📺 Visualize Dataset - Mode: {MODE.upper()}")
+    print(f"=" * 50)
+    print(f"Loading dataset from {root}...")
+    
     try:
-        dataset = LeRobotDataset(REPO_NAME, root=ROOT)
+        dataset = LeRobotDataset(repo_name, root=root)
     except Exception as e:
         print(f"Error loading dataset: {e}")
         return
 
-    print("Initializing Environment...")
-    env = VisualizerEnv(XML_PATH, state_type='joint_angle')
+    print(f"Dataset loaded: {dataset.num_episodes} episodes, {len(dataset)} frames")
+    print(f"Image keys: {image_keys}")
+    
+    print("\nInitializing Environment...")
+    # 🔥 关键：action_type 必须是 'joint_angle'，因为数据集保存的是关节角度而非末端位姿
+    env = VisualizerEnv(XML_PATH, mode=MODE, action_type='joint_angle', state_type='joint_angle')
     
     print("\nStarting Playback...")
     print("Sync Mode: Wall-Clock Locking (Strict)")
@@ -80,29 +155,28 @@ def main():
     # 外层循环：如果LOOP_EPISODE不为0，则无限循环播放
     while True:
         for ep_idx in episode_list:
-            print(f"\n=== Playing Episode {ep_idx} ===")
+            print(f"\n=== Playing Episode {ep_idx} ({MODE.upper()} mode) ===")
             
             from_idx = episode_data_index["from"][ep_idx].item()
             to_idx = episode_data_index["to"][ep_idx].item()
             frame_iterator = iter(range(from_idx, to_idx))
             
-            # 重置回原点，但位置连续性由物理引擎保持（如果不reset joint的话）
-            # 这里使用 mode='base' 进行标准重置
-            env.reset(mode='base')
+            # 重置环境
+            env.reset(mode=MODE)
             
-            # 🔥 读取本集第一帧的位姿来初始化小车
-            # 注意：set_base_pose 会自动使用 0.05m 的安全高度，让机器人自然掉落而不是从地下弹出来
-            try:
-                first_frame = dataset[from_idx]
-                if 'base_pose' in first_frame:
-                    start_pose = first_frame['base_pose'].numpy()
-                    start_x, start_y, start_theta = start_pose[0], start_pose[1], start_pose[2]
-                    env.set_base_pose(start_x, start_y, start_theta)  # z 默认为 0.05m 安全高度
-                    print(f"Reset robot to: x={start_x:.2f}, y={start_y:.2f}, theta={np.degrees(start_theta):.2f}° (z=0.05m safe height)")
-            except KeyError:
-                print("No base_pose found in dataset, using default origin.")
-            except Exception as e:
-                print(f"Warning: Could not set initial pose from dataset: {e}") 
+            # 🔥 读取本集第一帧的位姿来初始化小车（仅 base 模式有 base_pose）
+            if MODE == 'base':
+                try:
+                    first_frame = dataset[from_idx]
+                    if 'base_pose' in first_frame:
+                        start_pose = first_frame['base_pose'].numpy()
+                        start_x, start_y, start_theta = start_pose[0], start_pose[1], start_pose[2]
+                        env.set_base_pose(start_x, start_y, start_theta)
+                        print(f"Reset robot to: x={start_x:.2f}, y={start_y:.2f}, theta={np.degrees(start_theta):.2f}° (z=0.05m safe height)")
+                except KeyError:
+                    print("No base_pose found in dataset, using default origin.")
+                except Exception as e:
+                    print(f"Warning: Could not set initial pose from dataset: {e}") 
             
             # 🔥 记录本集开始时的物理绝对时间 🔥
             start_abs_sim_time = env.env.data.time
@@ -111,7 +185,7 @@ def main():
             episode_start_wall_time = time.time()
             played_frames = 0
             
-            # 🔥 位置漂移统计变量 🔥
+            # 🔥 位置漂移统计变量（仅 base 模式使用）🔥
             max_drift = 0.0
             total_drift = 0.0
             drift_count = 0
@@ -130,21 +204,21 @@ def main():
                     # --- 加载数据 ---
                     item = dataset[frame_idx]
                     
-                    # 1. 这一步是为了让画面更新，特别是机械臂姿态
-                    env.step(item['action'].numpy(), mode='base') 
+                    # 执行动作
+                    env.step(item['action'].numpy(), mode=MODE) 
                     
-                    # 2. 【关键修改】如果数据里有真实位置，强制把小车按回去！
-                    # 这样你就不会看到漂移了，看到的就是你当时真实的完美操作
-                    if 'base_pose' in item:
+                    # 【base 模式】如果数据里有真实位置，强制把小车按回去
+                    if MODE == 'base' and 'base_pose' in item:
                         recorded_pose = item['base_pose'].numpy()
                         x, y, theta = recorded_pose[0], recorded_pose[1], recorded_pose[2]
-                        # 强制覆盖物理引擎的计算结果
                         env.set_base_pose(x, y, theta)
 
-                    # --- 图像更新 ---
-                    env.rec_img_front = (item['observation.images.front'].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-                    env.rec_img_left = (item['observation.images.left'].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-                    env.rec_img_right = (item['observation.images.right'].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                    # --- 图像更新 (根据模式选择不同的 key) ---
+                    for i, key in enumerate(image_keys):
+                        img_key = f'observation.images.{key}'
+                        if img_key in item:
+                            img = (item[img_key].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                            setattr(env, f'rec_img_{i}', img)
                     
                     # --- 计算相对 Sim Time ---
                     current_rel_sim_time = env.env.data.time - start_abs_sim_time
@@ -168,9 +242,9 @@ def main():
                     if diff > 0:
                         time.sleep(diff)
                     
-                    # --- 4. 位置漂移检测 🔥 ---
+                    # --- 4. 位置漂移检测（仅 base 模式）🔥 ---
                     pos_error = None
-                    if 'base_pose' in item:
+                    if MODE == 'base' and 'base_pose' in item:
                         # 获取当前回放时的实际位置
                         curr_replay_pos = env.env.get_p_body('tb3_base')[:2]  # [x, y]
                         
@@ -202,8 +276,8 @@ def main():
                                   end='\r', flush=True)
 
             print(f"\nEpisode {ep_idx} finished.")
-            # 显示位置漂移统计信息
-            if drift_count > 0:
+            # 显示位置漂移统计信息（仅 base 模式）
+            if MODE == 'base' and drift_count > 0:
                 avg_drift = total_drift / drift_count
                 print(f"  📊 Position Drift Stats: Max={max_drift*100:.2f} cm, Avg={avg_drift*100:.2f} cm, Samples={drift_count}")
             

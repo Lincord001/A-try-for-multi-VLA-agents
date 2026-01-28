@@ -1,6 +1,6 @@
 dataset:
-  repo_id: omy_arm_data       # <--- 对应 Arm 数据集的 ID
-  root: ./demo_data_arm       # <--- 对应 Arm 数据集的本地路径
+  repo_id: omy_arm_data_v4   # <--- 对应 Arm 数据集的 ID (V4版本)
+  root: ./demo_data_arm_v4   # <--- 对应 Arm 数据集的本地路径 (V4版本)
 
 policy:
   type: pi0

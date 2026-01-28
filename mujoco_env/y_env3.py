@@ -424,5 +424,15 @@ class SimpleEnv3:
         # 显示任务文字 (覆盖在左下角，Base模式和Arm模式都显示)
         if getattr(self, 'instruction', None):
             self.env.viewer_text_overlay(text1='Task', text2=self.instruction)
+        
+        # 显示小车实时坐标 (左下角)
+        try:
+            tb3_pos = self.env.get_p_body('tb3_base')
+            tb3_rot = self.env.get_R_body('tb3_base')
+            theta = np.arctan2(tb3_rot[1, 0], tb3_rot[0, 0])  # Yaw 角
+            coord_text = f"X:{tb3_pos[0]:+.3f}  Y:{tb3_pos[1]:+.3f}  Z:{tb3_pos[2]:.3f}  Yaw:{np.rad2deg(theta):+.1f}"
+            self.env.viewer_text_overlay(text1='TB3 Pose', text2=coord_text)
+        except Exception as e:
+            pass  # 静默处理，避免影响渲染
                 
         self.env.render()
