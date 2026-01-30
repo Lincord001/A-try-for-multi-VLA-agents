@@ -37,15 +37,28 @@ EXPERT_Y_PLACE_OFFSET = 0.03         # 建议先试 0.02 (2cm)，觉得不够就
 EXPERT_HOVER_NOISE = 0.01            # 悬停点误差 (Hover point noise)
 EXPERT_Z_NOISE = 0.005               # Z轴高度微小随机噪声 (Z height noise)
 
-# --- 运动步数参数 ---
-EXPERT_APPROACH_STEPS = 30           # 接近阶段插值步数 (Approach phase steps)
-EXPERT_DESCEND_STEPS = 20            # 下降阶段插值步数 (Descend to grasp steps)
-EXPERT_GRASP_WAIT_STEPS = 8         # 抓取等待步数 (Wait for grasp to settle)
-EXPERT_LIFT_STEPS = 25               # 提升阶段插值步数 (Lift phase steps)
-EXPERT_TRANSPORT_STEPS = 50          # 运输阶段贝塞尔曲线步数 (Bezier transport steps)
-EXPERT_LOWER_STEPS = 25              # 下降到放置点步数 (Lower to place steps)
-EXPERT_PLACE_WAIT_STEPS = 8         # 放置等待步数 (Wait for place to settle)
-EXPERT_RETRACT_STEPS = 25            # 撤离阶段插值步数 (Retract phase steps)
+# --- 🔥 动态步数参数（基于距离计算，提高数据多样性）---
+# 末端执行器速度参数（米/步），用于根据距离动态计算步数
+# 🔥 V4.1: 速度减半，使单条数据集时长变为原来的2倍
+EXPERT_SPEED_APPROACH = 0.006        # 接近阶段速度 (Approach speed, m/step) - 原0.012减半
+EXPERT_SPEED_DESCEND = 0.005         # 下降阶段速度 (Descend speed, m/step) - 原0.010减半
+EXPERT_SPEED_LIFT = 0.004            # 提升阶段速度 (Lift speed, m/step) - 原0.008减半
+EXPERT_SPEED_TRANSPORT = 0.004       # 运输阶段速度 (Transport speed, m/step) - 原0.008减半
+EXPERT_SPEED_LOWER = 0.004           # 下降到放置点速度 (Lower speed, m/step) - 原0.008减半
+EXPERT_SPEED_RETRACT = 0.005         # 撤离阶段速度 (Retract speed, m/step) - 原0.010减半
+
+# 最小/最大步数限制（防止极端情况）
+EXPERT_MIN_STEPS = 8                 # 任何阶段的最小步数 (Min steps for any phase)
+EXPERT_MAX_STEPS = 80                # 任何阶段的最大步数 (Max steps for any phase)
+
+# 等待阶段步数（带随机扰动范围）
+EXPERT_GRASP_WAIT_BASE = 8           # 抓取等待基础步数 (Grasp wait base steps)
+EXPERT_GRASP_WAIT_NOISE = 2          # 抓取等待随机扰动 ± (Grasp wait noise)
+EXPERT_PLACE_WAIT_BASE = 8           # 放置等待基础步数 (Place wait base steps)
+EXPERT_PLACE_WAIT_NOISE = 2          # 放置等待随机扰动 ± (Place wait noise)
+
+# 速度随机扰动范围（增加多样性）
+EXPERT_SPEED_NOISE_RATIO = 0.2       # 速度随机扰动比例 ±20% (Speed noise ratio)
 
 # --- 贝塞尔曲线控制点参数 ---
 EXPERT_BEZIER_XY_OFFSET = 0.02       # 贝塞尔控制点XY随机偏移范围 (Control point XY offset)
@@ -58,7 +71,8 @@ EXPERT_BEZIER_TANGENT_MARGIN = 0.05  # 与圆相切时的安全余量（米）(S
 EXPERT_BEZIER_SMALL_CURVE = 0.08     # 直线不穿过圆时的小弧线偏移（米）(Small curve offset when line doesn't cross circle)
 
 # --- 录制缓冲参数 ---
-EXPERT_START_DELAY = 15              # 启动缓冲期步数（约0.3秒，20Hz下）(Pre-recording buffer steps)
+EXPERT_START_DELAY = 15              # 启动缓冲期步数（约0.75秒，20Hz下）(Pre-recording buffer steps)
+EXPERT_POST_WAIT = 60                # 🔥 执行完成后等待步数（3秒，20Hz下）用于人工确认 (Post-execution wait steps)
 
 # ====== 🎲 Object Initialization Parameters (物体初始化参数) ======
 # 这些参数用于控制杯子的随机初始化，可根据需要调整
@@ -71,18 +85,25 @@ ARM_BASE_Y = 0.0                     # 机械臂基座Y坐标 (Arm base Y positi
 TABLE_Z_HEIGHT = 0.33                # 桌面高度 0.3 + 杯子偏移 0.03 (Table height + cup offset)
 
 # --- 抓取范围参数（相对于机械臂基座）---
-CUP_MIN_RADIUS = 0.3                 # 最小距离（避免太近）(Min distance from arm base)
-CUP_MAX_RADIUS = 0.4                 # 最大距离（保证可达）(Max distance from arm base)
-CUP_MIN_ANGLE = -90                  # 最小角度（度）(Min angle in degrees)
-CUP_MAX_ANGLE = 90                   # 最大角度（度，基座前方半圆）(Max angle in degrees)
+# 🔥 V4.1: 杯子位置固定，每个杯子只在固定位置附近小范围随机
+CUP_POSITION_NOISE = 0.02            # 杯子位置随机范围 ±2cm (Cup position noise)
+
+# 🔥 V4.1: 四个杯子的固定位置（红蓝黄绿，从左到右）
+# 基座在 (-0.4, 0)，杯子距离基座约 0.35m
+# 🔥 V4.1.2: 拉开杯子间距（均匀分布，每个间隔 0.20m）
+CUP_FIXED_POSITIONS = {
+    'body_obj_mug_5': (-0.12, -0.30, 0.345),   # 红色 - 最左
+    'body_obj_mug_6': (-0.08, -0.10, 0.345),   # 蓝色 - 左中
+    'body_obj_mug_7': (-0.04,  0.10, 0.345),   # 黄色 - 右中
+    'body_obj_mug_8': (-0.08,  0.30, 0.345),   # 绿色 - 最右
+}
 
 # --- 杯子数量概率分布 ---
-# 随机选择1-4个杯子放在桌上的概率权重
-# 格式：[1个杯子的权重, 2个杯子的权重, 3个杯子的权重, 4个杯子的权重]
-CUP_COUNT_WEIGHTS = [0.15, 0.2, 0.30, 0.35]  # 对应 [1个, 2个, 3个, 4个] 的概率
+# 🔥 V4.1: 固定为4个杯子
+CUP_COUNT_WEIGHTS = [0.0, 0.0, 0.0, 1.0]  # 永远选择4个杯子
 
 # --- 杯子间距参数 ---
-CUP_MIN_DISTANCE = 0.15              # 杯子之间的最小距离（米），避免碰撞 (Min distance between cups)
+CUP_MIN_DISTANCE = 0.10              # 杯子之间的最小距离（米）- 缩小以适应固定位置
 CUP_PLACEMENT_MAX_ATTEMPTS = 100     # 每个杯子的最大尝试次数，避免无限循环 (Max placement attempts)
 
 # --- 桌面范围限制 ---
@@ -104,55 +125,10 @@ NAV_INSTRUCTIONS = [
     "Move to the workbench."
 ]
 
-# 协同任务指令库（每个指令包含文本和颜色属性）
+# 🔥 V4.1: 简化指令集 - 只用一种模板，颜色自动填充
+# 这样只有格式上的统一，但仍有 4 种最终指令（红/蓝/黄/绿）
 COLLAB_INSTRUCTIONS = [
-    # 基础放置类指令
-    {"text": "Place the {color} mug on the robot's tray.", "color": None},
-    {"text": "Put the {color} mug onto the tray.", "color": None},
-    {"text": "Transfer the {color} mug to the mobile robot.", "color": None},
-    {"text": "Load the {color} mug onto the cart.", "color": None},
-    {"text": "Set the {color} mug on the robot's tray.", "color": None},
-    {"text": "Move the {color} mug to the cart.", "color": None},
-    
-    # 抓取类指令
-    {"text": "Pick up the {color} mug and place it on the tray.", "color": None},
-    {"text": "Grab the {color} mug and put it on the robot.", "color": None},
-    {"text": "Take the {color} mug and load it onto the cart.", "color": None},
-    {"text": "Pick the {color} mug and transfer it to the tray.", "color": None},
-    {"text": "Collect the {color} mug and place it on the mobile robot.", "color": None},
-    
-    # 动作类指令
-    {"text": "Hand the {color} mug to the robot.", "color": None},
-    {"text": "Give the {color} mug to the mobile robot.", "color": None},
-    {"text": "Pass the {color} mug to the cart.", "color": None},
-    {"text": "Deliver the {color} mug to the robot's tray.", "color": None},
-    {"text": "Bring the {color} mug to the mobile robot.", "color": None},
-    
-    # 描述性指令
-    {"text": "The {color} mug should be placed on the tray.", "color": None},
-    {"text": "Please put the {color} mug on the robot's tray.", "color": None},
-    {"text": "I need the {color} mug on the cart.", "color": None},
-    {"text": "The {color} mug needs to go on the mobile robot.", "color": None},
-    
-    # 简洁指令
-    {"text": "Mug {color} to tray.", "color": None},
-    {"text": "{color} mug on cart.", "color": None},
-    {"text": "Put {color} mug on robot.", "color": None},
-    
-    # 强调颜色类指令
-    {"text": "Place the {color} colored mug on the tray.", "color": None},
-    {"text": "Put the {color} colored cup on the robot.", "color": None},
-    {"text": "Transfer the {color} colored mug to the cart.", "color": None},
-    
-    # 任务导向类指令
-    {"text": "Your task is to place the {color} mug on the robot's tray.", "color": None},
-    {"text": "The goal is to put the {color} mug on the cart.", "color": None},
-    {"text": "Objective: move the {color} mug to the mobile robot.", "color": None},
-    
-    # 请求类指令
-    {"text": "Could you place the {color} mug on the tray?", "color": None},
-    {"text": "Please move the {color} mug to the cart.", "color": None},
-    {"text": "Would you put the {color} mug on the robot?", "color": None},
+    {"text": "Place the {color} mug on the tray.", "color": None},
 ]
 
 class SimpleEnv4:
@@ -186,6 +162,8 @@ class SimpleEnv4:
         self.expert_pending = False       # 是否处于缓冲期（等待启动）
         self.expert_countdown = 0         # 缓冲期倒计时
         self.is_recording = False         # 录制标志位（用于外部检测是否需要保存图像）
+        self.expert_waiting_save = False  # 🔥 是否处于等待保存状态（执行完毕后的等待期）
+        self.expert_post_countdown = 0    # 🔥 执行完毕后的等待倒计时
 
         self.init_viewer()
         self.reset(seed)
@@ -237,11 +215,10 @@ class SimpleEnv4:
         self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
 
         try:
-            # V4: 小车初始位置根据控制模式设置
+            # V4.1: 小车初始位置根据控制模式设置
+            # 🔥 V4.1: 缩小小车随机范围至 ±5cm
             if self.control_mode == 'base':
                 # 导航模式：小车放在随机位置，需要移动到工作台
-                # x在[0.197, 2.05]范围内随机，y在[-0.4, 0.4]范围内随机
-                # 使用random模块而不是np.random，避免受全局seed影响，确保每次重置都是真正的随机
                 x_init = random.uniform(-0.640, -0.643)
                 y_init = random.uniform(-0.4, 0.4)
                 self.env.set_pR_base_body(
@@ -251,10 +228,9 @@ class SimpleEnv4:
                 )
             else:
                 # 协同模式：小车放在工作台旁边，等待接收物品
-                # 位置：x在[0.197, 2.05]范围内随机，y在[-0.4, 0.4]范围内随机，YAW=0 (朝向 +x)
-                # 使用random模块而不是np.random，避免受全局seed影响，确保每次重置都是真正的随机
+                # 🔥 V4.1: y 方向随机范围从 ±40cm 缩小到 ±5cm
                 x_init = random.uniform(-0.640, -0.643)
-                y_init = random.uniform(-0.4, 0.4)
+                y_init = random.uniform(-0.05, 0.05)  # 缩小范围：原 ±0.4 改为 ±0.05
                 self.env.set_pR_base_body(
                     body_name='tb3_base',
                     p=np.array([x_init, y_init, 0.0]),
@@ -282,6 +258,8 @@ class SimpleEnv4:
         self.expert_pending = False
         self.expert_countdown = 0
         self.is_recording = False
+        self.expert_waiting_save = False
+        self.expert_post_countdown = 0
 
         # 物体初始化
         self._init_objects_demo()
@@ -299,10 +277,9 @@ class SimpleEnv4:
         self.grab_image()
 
     def _init_objects_demo(self):
-        # ====== V4 版本物品初始化 (随机布局 + 随机杯子数量) ======
-        # 机械臂基座在 (-0.4, 0)，随机选择1-4个杯子放在桌上
-        # 未选中的杯子放到远处隐藏，增加数据集多样性
-        # 🔥 所有可调参数已移至文件开头的 "Object Initialization Parameters" 区域
+        # ====== V4.1 版本物品初始化 (固定顺序 + 小范围随机) ======
+        # 🔥 V4.1: 四个杯子固定顺序（红蓝黄绿，从左到右）
+        # 每个杯子只在固定位置附近 ±2cm 范围内随机
         
         # 杯子名称和颜色映射
         mug_info = {
@@ -313,77 +290,30 @@ class SimpleEnv4:
         }
         mug_names = list(mug_info.keys())
         
-        # 🔥 随机选择1-4个杯子放在桌上（加权概率分布）
-        # 概率权重在文件开头的 CUP_COUNT_WEIGHTS 中定义
-        num_mugs_on_table = random.choices(
-            population=[1, 2, 3, 4],
-            weights=CUP_COUNT_WEIGHTS,
-            k=1
-        )[0]
-        mugs_on_table = random.sample(mug_names, num_mugs_on_table)
+        # 🔥 V4.1: 永远4个杯子都在桌上
+        mugs_on_table = mug_names.copy()
         
         # 记录桌上的杯子信息（供 set_instruction 使用）
         self.mugs_on_table = mugs_on_table
         self.mug_colors_on_table = {name: mug_info[name] for name in mugs_on_table}
         
-        # 记录已放置杯子的位置，用于检查间距
-        placed_positions = []  # 存储 (x, y) 元组
-        
-        # 🔥 隐藏杯子的位置索引（每个隐藏杯子放在不同位置，避免互相穿模）
-        hidden_idx = 0
-        
-        # 处理每个杯子
+        # 🔥 V4.1: 按固定顺序放置杯子，每个杯子在固定位置附近小范围随机
         for mug_name in mug_names:
-            if mug_name in mugs_on_table:
-                # 🔥 在桌上的杯子：随机放置在抓取范围内
-                placed = False
-                attempts = 0
-                
-                while not placed and attempts < CUP_PLACEMENT_MAX_ATTEMPTS:
-                    attempts += 1
-                    
-                    # 使用random模块确保每次重置都是真正的随机
-                    # 随机生成极坐标（角度和半径）
-                    angle_deg = random.uniform(CUP_MIN_ANGLE, CUP_MAX_ANGLE)
-                    angle_rad = np.deg2rad(angle_deg)
-                    radius = random.uniform(CUP_MIN_RADIUS, CUP_MAX_RADIUS)
-                    
-                    # 转换为相对于机械臂基座的笛卡尔坐标
-                    x = ARM_BASE_X + radius * np.cos(angle_rad)
-                    y = ARM_BASE_Y + radius * np.sin(angle_rad)
-                    z = TABLE_Z_HEIGHT
-                    
-                    # 确保杯子在桌面范围内
-                    x = np.clip(x, TABLE_X_MIN, TABLE_X_MAX)
-                    y = np.clip(y, TABLE_Y_MIN, TABLE_Y_MAX)
-                    
-                    # 检查与已放置杯子的距离
-                    too_close = False
-                    for placed_x, placed_y in placed_positions:
-                        distance = np.sqrt((x - placed_x)**2 + (y - placed_y)**2)
-                        if distance < CUP_MIN_DISTANCE:
-                            too_close = True
-                            break
-                    
-                    # 如果距离合适，放置杯子
-                    if not too_close:
-                        self.env.set_p_base_body(body_name=mug_name, p=np.array([x, y, z]))
-                        self.env.set_R_base_body(body_name=mug_name, R=np.eye(3,3))
-                        placed_positions.append((x, y))
-                        placed = True
-                
-                # 如果尝试多次仍未成功，使用最后一次生成的位置
-                if not placed:
-                    self.env.set_p_base_body(body_name=mug_name, p=np.array([x, y, z]))
-                    self.env.set_R_base_body(body_name=mug_name, R=np.eye(3,3))
-                    placed_positions.append((x, y))
-            else:
-                # 🔥 不在桌上的杯子：放到远处隐藏，每个杯子位置不同
-                # 注意：不能放到地下 (z<0)，否则会穿模导致物理引擎计算爆炸
-                hidden_y = hidden_idx * HIDDEN_CUP_Y_INTERVAL
-                self.env.set_p_base_body(body_name=mug_name, p=np.array([HIDDEN_CUP_X, hidden_y, HIDDEN_CUP_Z]))
-                self.env.set_R_base_body(body_name=mug_name, R=np.eye(3,3))
-                hidden_idx += 1
+            # 获取该杯子的固定位置
+            base_x, base_y, base_z = CUP_FIXED_POSITIONS[mug_name]
+            
+            # 在固定位置附近添加小范围随机扰动 (±2cm)
+            x = base_x + random.uniform(-CUP_POSITION_NOISE, CUP_POSITION_NOISE)
+            y = base_y + random.uniform(-CUP_POSITION_NOISE, CUP_POSITION_NOISE)
+            z = base_z
+            
+            # 确保杯子在桌面范围内
+            x = np.clip(x, TABLE_X_MIN, TABLE_X_MAX)
+            y = np.clip(y, TABLE_Y_MIN, TABLE_Y_MAX)
+            
+            # 放置杯子
+            self.env.set_p_base_body(body_name=mug_name, p=np.array([x, y, z]))
+            self.env.set_R_base_body(body_name=mug_name, R=np.eye(3,3))
 
     def set_instruction(self, given=None, task_type=None):
         """
@@ -457,6 +387,7 @@ class SimpleEnv4:
                     target_body_name = random.choice(list(available_mugs.keys()))
                     color = available_mugs[target_body_name]
                     self.obj_target = target_body_name
+                    # 🔥 V4.1: 简化指令，不使用同义词替换
                     self.instruction = f'Place the {color} mug on the plate.'
                     self.target_color = color
         else:
@@ -654,6 +585,75 @@ class SimpleEnv4:
         """
         return [(pos.copy(), gripper_state) for _ in range(steps)]
     
+    def distance_based_steps(self, start, end, speed_per_step, min_steps=None, max_steps=None):
+        """
+        🔥 基于距离动态计算插值步数（提高数据多样性）
+        
+        Parameters:
+            start: 起始位置 (3,)
+            end: 终止位置 (3,)
+            speed_per_step: 每步移动的距离（米/步）
+            min_steps: 最小步数限制（默认使用全局 EXPERT_MIN_STEPS）
+            max_steps: 最大步数限制（默认使用全局 EXPERT_MAX_STEPS）
+            
+        Returns:
+            steps: 计算出的步数（整数）
+        """
+        if min_steps is None:
+            min_steps = EXPERT_MIN_STEPS
+        if max_steps is None:
+            max_steps = EXPERT_MAX_STEPS
+            
+        # 计算欧氏距离
+        dist = np.linalg.norm(end - start)
+        
+        # 添加速度随机扰动（±EXPERT_SPEED_NOISE_RATIO）
+        noise = np.random.uniform(-EXPERT_SPEED_NOISE_RATIO, EXPERT_SPEED_NOISE_RATIO)
+        actual_speed = speed_per_step * (1.0 + noise)
+        
+        # 计算步数并限制范围
+        steps = int(dist / actual_speed)
+        steps = np.clip(steps, min_steps, max_steps)
+        
+        return steps
+    
+    def rand_wait_steps(self, base_steps, noise_range):
+        """
+        🔥 为等待阶段生成带随机扰动的步数
+        
+        Parameters:
+            base_steps: 基础步数
+            noise_range: 随机扰动范围 ±
+            
+        Returns:
+            steps: 带扰动的步数（至少为 3）
+        """
+        noise = np.random.randint(-noise_range, noise_range + 1)
+        return max(3, base_steps + noise)
+    
+    def bezier_curve_length(self, p0, p1, p2, num_samples=20):
+        """
+        🔥 估算二阶贝塞尔曲线的弧长（用于动态计算运输步数）
+        
+        Parameters:
+            p0: 起点 (3,)
+            p1: 控制点 (3,)
+            p2: 终点 (3,)
+            num_samples: 采样点数量
+            
+        Returns:
+            length: 估算的曲线长度（米）
+        """
+        length = 0.0
+        prev_point = p0
+        for i in range(1, num_samples + 1):
+            t = i / num_samples
+            # 二阶贝塞尔曲线公式
+            point = (1 - t)**2 * p0 + 2 * (1 - t) * t * p1 + t**2 * p2
+            length += np.linalg.norm(point - prev_point)
+            prev_point = point
+        return length
+    
     def auto_execute_task(self, record=False):
         """
         🤖 自动执行专家策略，生成高质量演示轨迹
@@ -720,24 +720,38 @@ class SimpleEnv4:
             z_travel
         ])
         
+        # ====== 🔥 动态计算各阶段步数（基于距离）======
+        # 提前计算关键位置（供步数计算使用）
+        lift_pos = np.array([grasp_pos[0], grasp_pos[1], z_travel])
+        retract_pos = np.array([place_pos[0], place_pos[1], EXPERT_RETRACT_HEIGHT])
+        
+        # 动态步数计算
+        approach_steps = self.distance_based_steps(current_pos, hover_pos, EXPERT_SPEED_APPROACH)
+        descend_steps = self.distance_based_steps(hover_pos, grasp_pos, EXPERT_SPEED_DESCEND)
+        grasp_wait_steps = self.rand_wait_steps(EXPERT_GRASP_WAIT_BASE, EXPERT_GRASP_WAIT_NOISE)
+        lift_steps = self.distance_based_steps(grasp_pos, lift_pos, EXPERT_SPEED_LIFT)
+        lower_steps = self.distance_based_steps(place_hover_pos, place_pos, EXPERT_SPEED_LOWER)
+        place_wait_steps = self.rand_wait_steps(EXPERT_PLACE_WAIT_BASE, EXPERT_PLACE_WAIT_NOISE)
+        retract_steps = self.distance_based_steps(place_pos, retract_pos, EXPERT_SPEED_RETRACT)
+        # transport_steps 需要在计算控制点后计算（见下方）
+        
         # ====== 生成完整轨迹 ======
         trajectory = []
         
         # ====== 2. 接近阶段 (Approach) ======
         # 2.1 移动到物体上方悬停点（夹爪打开）
-        trajectory.extend(self.interpolate_move(current_pos, hover_pos, EXPERT_APPROACH_STEPS, gripper_state=0.0))
+        trajectory.extend(self.interpolate_move(current_pos, hover_pos, approach_steps, gripper_state=0.0))
         
         # 2.2 垂直下降到抓取点（平滑下降，夹爪打开）
-        trajectory.extend(self.interpolate_move(hover_pos, grasp_pos, EXPERT_DESCEND_STEPS, gripper_state=0.0))
+        trajectory.extend(self.interpolate_move(hover_pos, grasp_pos, descend_steps, gripper_state=0.0))
         
         # ====== 3. 抓取阶段 (Grasp) ======
         # 3.1 闭合夹爪并等待物理引擎结算
-        trajectory.extend(self.create_gripper_action(grasp_pos, gripper_state=1.0, steps=EXPERT_GRASP_WAIT_STEPS))
+        trajectory.extend(self.create_gripper_action(grasp_pos, gripper_state=1.0, steps=grasp_wait_steps))
         
         # ====== 4. 运输阶段 (Transport) ======
         # 4.1 垂直提升至巡航高度
-        lift_pos = np.array([grasp_pos[0], grasp_pos[1], z_travel])
-        trajectory.extend(self.interpolate_move(grasp_pos, lift_pos, EXPERT_LIFT_STEPS, gripper_state=1.0))
+        trajectory.extend(self.interpolate_move(grasp_pos, lift_pos, lift_steps, gripper_state=1.0))
         
         # 4.2 贝塞尔曲线运输到托盘上方
         # 🔥 优化：基于机械臂基座避障的贝塞尔曲线生成
@@ -805,19 +819,26 @@ class SimpleEnv4:
         
         control_point = np.array([control_point_xy[0], control_point_xy[1], control_point_z])
         
-        trajectory.extend(self.bezier_move(lift_pos, control_point, place_hover_pos, EXPERT_TRANSPORT_STEPS, gripper_state=1.0))
+        # 🔥 基于贝塞尔曲线弧长动态计算运输步数
+        bezier_length = self.bezier_curve_length(lift_pos, control_point, place_hover_pos)
+        # 添加速度随机扰动
+        noise = np.random.uniform(-EXPERT_SPEED_NOISE_RATIO, EXPERT_SPEED_NOISE_RATIO)
+        actual_transport_speed = EXPERT_SPEED_TRANSPORT * (1.0 + noise)
+        transport_steps = int(bezier_length / actual_transport_speed)
+        transport_steps = np.clip(transport_steps, EXPERT_MIN_STEPS, EXPERT_MAX_STEPS)
+        
+        trajectory.extend(self.bezier_move(lift_pos, control_point, place_hover_pos, transport_steps, gripper_state=1.0))
         
         # ====== 5. 放置阶段 (Place) ======
         # 5.1 垂直下降到放置点
-        trajectory.extend(self.interpolate_move(place_hover_pos, place_pos, EXPERT_LOWER_STEPS, gripper_state=1.0))
+        trajectory.extend(self.interpolate_move(place_hover_pos, place_pos, lower_steps, gripper_state=1.0))
         
         # 5.2 松开夹爪并等待物体落稳
-        trajectory.extend(self.create_gripper_action(place_pos, gripper_state=0.0, steps=EXPERT_PLACE_WAIT_STEPS))
+        trajectory.extend(self.create_gripper_action(place_pos, gripper_state=0.0, steps=place_wait_steps))
         
         # ====== 6. 撤离阶段 (Retract) ======
         # 🔥 关键：严格锁定 X/Y 轴，仅提升 Z 轴，避免碰倒刚放好的杯子
-        retract_pos = np.array([place_pos[0], place_pos[1], EXPERT_RETRACT_HEIGHT])
-        trajectory.extend(self.interpolate_move(place_pos, retract_pos, EXPERT_RETRACT_STEPS, gripper_state=0.0))
+        trajectory.extend(self.interpolate_move(place_pos, retract_pos, retract_steps, gripper_state=0.0))
         
         # 保存轨迹到实例变量
         self.expert_trajectory = trajectory
@@ -833,6 +854,10 @@ class SimpleEnv4:
         print(f"   Target object: {self.obj_target} ({getattr(self, 'target_color', 'unknown')} mug)")
         print(f"   Grasp pos: ({grasp_pos[0]:.3f}, {grasp_pos[1]:.3f}, {grasp_pos[2]:.3f})")
         print(f"   Place pos: ({place_pos[0]:.3f}, {place_pos[1]:.3f}, {place_pos[2]:.3f})")
+        print(f"   🔥 Dynamic Steps: approach={approach_steps}, descend={descend_steps}, grasp_wait={grasp_wait_steps}")
+        print(f"                    lift={lift_steps}, transport={transport_steps}, lower={lower_steps}")
+        print(f"                    place_wait={place_wait_steps}, retract={retract_steps}")
+        print(f"   📏 Bezier arc length: {bezier_length:.3f}m")
         if record:
             print(f"   🎥 Recording Mode: Buffer {EXPERT_START_DELAY} steps before motion start")
         else:
@@ -858,12 +883,29 @@ class SimpleEnv4:
                 # 缓冲期中，返回全零动作（保持静止）
                 return np.concatenate([np.zeros(6), [float(self.gripper_state)]], dtype=np.float32)
         
-        # 🔥 结尾处理结束状态
+        # 🔥 处理执行完毕后的等待期
+        if self.expert_waiting_save:
+            self.expert_post_countdown -= 1
+            if self.expert_post_countdown <= 0:
+                # 等待期结束，自动停止录制（但不保存）
+                self.expert_waiting_save = False
+                self.is_recording = False
+                print(f"\n⏰ Post-execution wait finished. Recording PAUSED (not saved).")
+                print(f"   👉 Press [U] to SAVE, or [I] to DISCARD.")
+                return None
+            else:
+                # 等待期中，继续录制但返回静止动作
+                return np.concatenate([np.zeros(6), [float(self.gripper_state)]], dtype=np.float32)
+        
+        # 🔥 结尾处理：轨迹执行完毕，进入等待期
         if self.expert_trajectory_idx >= len(self.expert_trajectory):
             self.expert_executing = False
-            self.is_recording = False  # 🔥 重要：停止录制
-            print("✅ Task Done. Recording Stopped.")
-            return None
+            # 🔥 不立即停止录制，而是进入等待期继续录制
+            self.expert_waiting_save = True
+            self.expert_post_countdown = EXPERT_POST_WAIT
+            print(f"\n✅ Expert trajectory finished! Entering {EXPERT_POST_WAIT/20:.1f}s post-wait period...")
+            # 返回静止动作，继续录制
+            return np.concatenate([np.zeros(6), [float(self.gripper_state)]], dtype=np.float32)
         
         target_pos, gripper_state = self.expert_trajectory[self.expert_trajectory_idx]
         self.expert_trajectory_idx += 1
@@ -888,36 +930,44 @@ class SimpleEnv4:
         
         if self.env.is_key_pressed_once(key=glfw.KEY_Z): reset = True
         if self.env.is_key_pressed_once(key=glfw.KEY_SPACE): self.gripper_state = not self.gripper_state
-        if self.env.is_key_pressed_once(key=glfw.KEY_I) and mode == 'arm':
-            # I 键：平滑归位机械臂
-            self.smooth_return_home()
+        # 🔥 O 键：平滑归位机械臂（仅 Arm 模式）
+        if self.env.is_key_pressed_once(key=glfw.KEY_O) and mode == 'arm':
+            if not self.returning_home:
+                print("🏠 [O] Smooth Return Origin Pose : Moving arm to initial position...")
+                self.smooth_return_home()
+            else:
+                print("⚠️ Arm is already returning home.")
         
         # 🤖 T 键：测试模式（仅执行，不录制）
         if self.env.is_key_pressed_once(key=glfw.KEY_T) and mode == 'arm':
-            if not self.expert_executing and not self.expert_pending:
+            if not self.expert_executing and not self.expert_pending and not self.expert_waiting_save:
                 print("🤖 [T] Test Mode: Auto Execute Expert Policy (No Recording)")
                 print("   → Recording flag disabled, test mode only...")
                 self.auto_execute_task(record=False)
             else:
-                print("⚠️ Expert policy already running. Press Z to reset.")
+                print("⚠️ Expert policy already running or waiting for save. Press Z to reset.")
         
         # 🎥 Y 键：录制模式（执行并开启录制）
         if self.env.is_key_pressed_once(key=glfw.KEY_Y) and mode == 'arm':
-            if not self.expert_executing and not self.expert_pending:
+            if not self.expert_executing and not self.expert_pending and not self.expert_waiting_save:
                 print("🎥 [Y] Record Mode: Auto Execute Expert Policy + Start Recording")
-                print("   → Recording flag enabled, buffer period active...")
+                print("   → Recording flag enabled, auto-stop after 3s post-wait...")
+                print("   → After completion: [U] to SAVE, [I] to DISCARD")
                 self.auto_execute_task(record=True)
             else:
-                print("⚠️ Expert policy already running. Press Z to reset.")
+                print("⚠️ Expert policy already running or waiting for save. Press Z to reset.")
 
         if mode == 'arm':
-            # 🤖 如果专家策略处于pending或executing状态，优先返回专家动作
-            if self.expert_pending or self.expert_executing:
+            # 🤖 如果专家策略处于pending、executing或waiting_save状态，优先返回专家动作
+            if self.expert_pending or self.expert_executing or self.expert_waiting_save:
                 action = self.get_expert_action()
                 if action is not None:
-                    # 显示进度（pending时显示倒计时）
+                    # 显示进度（不同阶段显示不同信息）
                     if self.expert_pending:
                         print(f"   ⏳ Buffer: {self.expert_countdown}/{EXPERT_START_DELAY} steps...", end='\r')
+                    elif self.expert_waiting_save:
+                        # 🔥 显示等待期倒计时
+                        print(f"   ⏰ Post-wait: {self.expert_post_countdown}/{EXPERT_POST_WAIT} steps (recording)...", end='\r')
                     else:
                         progress = self.expert_trajectory_idx / len(self.expert_trajectory) * 100
                         print(f"   🤖 Expert: {self.expert_trajectory_idx}/{len(self.expert_trajectory)} ({progress:.1f}%)", end='\r')
@@ -1154,7 +1204,7 @@ class SimpleEnv4:
         except Exception as e:
             pass  # 静默处理，避免影响渲染
         
-        # V4 新增：显示桌上杯子的XY坐标 (左下角)
+        # V4 新增：显示桌上杯子的XYZ坐标 (左下角)
         try:
             # 只显示桌上存在的杯子
             if hasattr(self, 'mug_colors_on_table') and len(self.mug_colors_on_table) > 0:
@@ -1163,7 +1213,7 @@ class SimpleEnv4:
                 for mug_name, color in self.mug_colors_on_table.items():
                     p_mug = self.env.get_p_body(mug_name)
                     display_name = color_names.get(color, color.capitalize())
-                    mug_texts.append(f"{display_name}:({p_mug[0]:+.3f},{p_mug[1]:+.3f})")
+                    mug_texts.append(f"{display_name}:({p_mug[0]:+.3f},{p_mug[1]:+.3f},{p_mug[2]:.3f})")
                 
                 # 每两个换一行
                 lines = []

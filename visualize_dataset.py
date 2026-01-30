@@ -26,7 +26,8 @@ DATASET_CONFIG = {
 
 XML_PATH = './asset/example_scene_y4.xml'
 FPS = 20  # 录制时的帧率
-LOOP_EPISODE = 0  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
+LOOP_EPISODE = 301  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
+START_EPISODE = 0  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
 # ===========================================
 
 
@@ -131,6 +132,12 @@ def main():
     print(f"Dataset loaded: {dataset.num_episodes} episodes, {len(dataset)} frames")
     print(f"Image keys: {image_keys}")
     
+    # 🔥 错误检查：LOOP_EPISODE 和 START_EPISODE 不能同时不为0
+    if LOOP_EPISODE != 0 and START_EPISODE != 0:
+        print(f"Error: LOOP_EPISODE={LOOP_EPISODE} and START_EPISODE={START_EPISODE} cannot both be non-zero!")
+        print("Please set one of them to 0.")
+        return
+    
     print("\nInitializing Environment...")
     # 🔥 关键：action_type 必须是 'joint_angle'，因为数据集保存的是关节角度而非末端位姿
     env = VisualizerEnv(XML_PATH, mode=MODE, action_type='joint_angle', state_type='joint_angle')
@@ -148,6 +155,13 @@ def main():
             return
         episode_list = [LOOP_EPISODE]
         print(f"Loop Mode: Will loop playback episode {LOOP_EPISODE}")
+    elif START_EPISODE != 0:
+        # 验证episode索引是否有效
+        if START_EPISODE < 0 or START_EPISODE >= dataset.num_episodes:
+            print(f"Error: START_EPISODE={START_EPISODE} is out of range [0, {dataset.num_episodes-1}]")
+            return
+        episode_list = list(range(START_EPISODE, dataset.num_episodes))
+        print(f"Start Mode: Will play from episode {START_EPISODE} to {dataset.num_episodes-1} ({len(episode_list)} episodes)")
     else:
         episode_list = list(range(dataset.num_episodes))
         print(f"Normal Mode: Will play all {dataset.num_episodes} episodes")
@@ -290,7 +304,7 @@ def main():
         if not env.env.is_viewer_alive():
             break
         
-        # 如果LOOP_EPISODE为0，播放完所有episodes后退出
+        # 如果LOOP_EPISODE为0，播放完所有episodes后退出（包括START_EPISODE模式）
         if LOOP_EPISODE == 0:
             break
     

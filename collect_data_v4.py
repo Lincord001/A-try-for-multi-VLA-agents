@@ -6,7 +6,7 @@ import time
 import glfw
 import threading
 import queue
-import cv2  # 🔥 比 PIL 快 5-10 倍
+from PIL import Image  # 🔥 V4.1: 改回 PIL，与部署环境保持一致
 from mujoco_env.y_env4 import SimpleEnv4 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
@@ -74,6 +74,7 @@ class DataSaverWorker(threading.Thread):
         self.daemon = True
         self.running = True
         self._peak_qsize = 0  # 记录峰值，用于调试
+        self.saving_in_progress = False  # 🔥 保存进行中标志（防止竞态条件）
 
     def put(self, item):
         """主线程调用：将原始数据放入队列（永不阻塞）"""
@@ -93,9 +94,11 @@ class DataSaverWorker(threading.Thread):
 
     @staticmethod
     def _fast_resize(img):
-        """🔥 使用 OpenCV resize，比 PIL 快 5-10 倍"""
+        """🔥 V4.1: 改回 PIL resize，与部署环境保持一致"""
         # 使用全局配置的 IMG_SIZE
-        return cv2.resize(img, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_LINEAR)
+        pil_img = Image.fromarray(img)
+        pil_img = pil_img.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
+        return np.array(pil_img)
 
     def run(self):
         """子线程循环：后台处理数据"""
@@ -148,6 +151,25 @@ class DataSaverWorker(threading.Thread):
     def wait_queue_empty(self):
         """等待所有数据处理完毕（录制结束后调用）"""
         self.queue.join()
+    
+    def clear_queue(self):
+        """🔥 清空队列中所有未处理的数据（丢弃时调用）"""
+        # 🔥 防止在保存期间清空队列（竞态条件保护）
+        if self.saving_in_progress:
+            print(f"   ⚠️ Cannot clear queue: Save operation in progress. Please wait...")
+            return False
+        
+        cleared_count = 0
+        while True:
+            try:
+                self.queue.get_nowait()
+                self.queue.task_done()
+                cleared_count += 1
+            except queue.Empty:
+                break
+        if cleared_count > 0:
+            print(f"   🗑️ Cleared {cleared_count} frames from queue.")
+        return True
 
 # ===========================================
 
@@ -230,23 +252,30 @@ def main():
     is_recording = False
     current_frames = 0
 
-    print("\n" + "="*50)
+    print("\n" + "="*60)
     print(f" 🚀 DATA COLLECTION MODE: {current_mode.upper()} (HOT-SWITCH ENABLED)")
     print(f" 📁 ARM  Dataset: {DATASET_CONFIG['arm']['repo_name']} (Episode #{episode_ids['arm']})")
     print(f" 📁 BASE Dataset: {DATASET_CONFIG['base']['repo_name']} (Episode #{episode_ids['base']})")
     print(f" 🧵 ASYNC RECORDER ACTIVE (Using Background Thread)")
     print(f" 🛡️ Safety Limit: Max {MAX_EPISODE_SEC}s ({MAX_FRAMES} frames) per episode")
-    print(" Control Keys:")
+    print("-"*60)
+    print(" 🎮 Control Keys (通用):")
     print("  [J] : Start Recording (开始录制)")
-    print("  [K] : Stop & SAVE (保存当前条)")
-    print("  [Q] : Stop & DISCARD (废弃当前条，重录)")
+    print("  [K] : Stop & SAVE (停止并保存)")
+    print("  [I] : 🔥 DISCARD Recording (丢弃当前录制) [NEW!]")
     print("  [Z] : Reset Environment Only (仅重置环境)")
-    print("  [C] : 🔥 HOT-SWITCH Mode (Base ↔ Arm, 不重置环境)")
-    print("  [I] : Smooth Return Home (平滑归位机械臂, 仅 Arm 模式)")
-    print("  [T] : 🤖 Test Mode: Auto Execute Expert Policy (测试模式，不录制, 仅 Arm 模式)")
-    print("  [Y] : 🎥 Record Mode: Auto Execute + Start Recording (录制模式，自动执行并录制, 仅 Arm 模式)")
+    print("  [C] : 🔥 HOT-SWITCH Mode (Base ↔ Arm)")
+    print("-"*60)
+    print(" 🤖 ARM Mode Only (机械臂模式专用):")
+    print("  [T] : Test Mode: Auto Execute (测试模式，不录制)")
+    print("  [Y] : 🎥 Record Mode: Auto Execute + Recording")
+    print("        → 执行完成后等待3秒，自动暂停录制")
+    print("        → 暂停后按 [U] 保存, 或 [I] 丢弃")
+    print("  [U] : 🔥 SAVE Paused Recording (保存暂停的录制) [NEW!]")
+    print("  [O] : 🏠 Smooth Return Home (平滑归位机械臂)")
+    print("-"*60)
     print(f" Current Mode: {current_mode.upper()} | Next Episode ID: {episode_ids[current_mode]}")
-    print("="*50 + "\n")
+    print("="*60 + "\n")
 
     try:
         # 🔥 2. 移除 NUM_DEMO 限制，实现无限录制 🔥
@@ -265,92 +294,219 @@ def main():
                 if current_mode == 'arm':
                     # 如果环境开始录制，但本地还没开始，则同步开始
                     if PnPEnv.is_recording and not is_recording:
-                        is_recording = True
-                        current_frames = 0
-                        PnPEnv._expert_done_printed = False  # 🔥 重置提示标志
-                        if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
-                            dataset.clear_episode_buffer()
-                        worker.wait_queue_empty()
-                        print(f"🔴 [REC START] [{current_mode.upper()}] Recording Episode {current_episode_id} (Auto-start from Expert Policy)...")
-                    # 🔥 专家策略结束后，只打印提示，不自动停止录制
-                    # 让用户人工检查后按 K（保存）或 Q（丢弃）
-                    elif not PnPEnv.is_recording and not PnPEnv.expert_executing and not PnPEnv.expert_pending and is_recording:
-                        # 只在专家策略刚结束时打印一次提示
+                        # 🔥 检查是否正在保存
+                        if worker.saving_in_progress:
+                            print(f"\n⚠️ Cannot start recording: Save operation in progress. Please wait...")
+                        else:
+                            is_recording = True
+                            current_frames = 0
+                            PnPEnv._expert_done_printed = False  # 🔥 重置提示标志
+                            # 🔥 先清空队列（防止残留的旧数据混入新录制）
+                            if worker.clear_queue():
+                                # 🔥 等待正在处理的帧完成
+                                worker.wait_queue_empty()
+                                # 🔥 最后清空缓冲区（此时保证没有旧数据会再写入）
+                                if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
+                                    dataset.clear_episode_buffer()
+                                print(f"🔴 [REC START] [{current_mode.upper()}] Recording Episode {current_episode_id} (Auto-start from Expert Policy)...")
+                    
+                    # 🔥 专家策略执行完毕+等待期结束后，自动停止录制（但不保存）
+                    # 此时 is_recording=True 但 PnPEnv.is_recording=False
+                    if not PnPEnv.is_recording and not PnPEnv.expert_executing and not PnPEnv.expert_pending and not PnPEnv.expert_waiting_save and is_recording:
+                        # 只在刚停止时打印一次提示
                         if not hasattr(PnPEnv, '_expert_done_printed') or not PnPEnv._expert_done_printed:
-                            print(f"\n✅ Expert Policy finished! Recording continues...")
-                            print(f"   👀 Please check the result, then press [K] to SAVE or [Q] to DISCARD.")
+                            is_recording = False  # 🔥 停止本地录制（但数据仍在缓冲区，未保存）
+                            print(f"\n⏸️ [REC PAUSED] Recording stopped after post-wait period ({current_frames} frames buffered)")
+                            print(f"   👉 Press [U] to SAVE, or [I] to DISCARD.")
                             PnPEnv._expert_done_printed = True
+                            PnPEnv._waiting_for_save = True  # 🔥 新增：标记正在等待用户保存/丢弃
+                            PnPEnv._last_queue_display = -1  # 🔥 初始化队列显示计数器
+                            PnPEnv._queue_line_printed = False  # 🔥 初始化打印标志
+                    
+                    # 🔥 独立的队列状态显示逻辑（在等待保存/丢弃期间持续更新）
+                    if getattr(PnPEnv, '_waiting_for_save', False):
+                        queue_remaining = worker.qsize()
+                        if queue_remaining != getattr(PnPEnv, '_last_queue_display', -1):
+                            PnPEnv._last_queue_display = queue_remaining
+                            if queue_remaining > 0:
+                                # 🔥 使用回车符覆盖整行，实时更新
+                                print(f"\r   📊 Queue: {queue_remaining:4d} frames still processing in background...   ", end='', flush=True)
+                            else:
+                                # 队列清空，打印最终状态并换行
+                                print(f"\r   📊 Queue: All frames processed.                                   ")
+                                PnPEnv._queue_line_printed = False  # 重置标志
                 
                 # [J] 开始录制
                 if PnPEnv.env.is_key_pressed_once(glfw.KEY_J):
                     if not is_recording:
-                        is_recording = True
-                        current_frames = 0  # 重置计数器
-                        # 🔥 仅在 episode_buffer 存在时清空（作为保险）
-                        if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
-                            dataset.clear_episode_buffer() # 确保缓冲区干净
-                        # 确保之前的队列处理完了
-                        worker.wait_queue_empty()
-                        # 🔥 3. 录制开始时打印当前是第几条 🔥
-                        print(f"🔴 [REC START] [{current_mode.upper()}] Recording Episode {current_episode_id} ...")
+                        # 🔥 检查是否正在保存
+                        if worker.saving_in_progress:
+                            print(f"\n⚠️ [J] Cannot start recording: Save operation in progress. Please wait...")
+                        else:
+                            is_recording = True
+                            current_frames = 0  # 重置计数器
+                            # 🔥 先清空队列（防止残留的旧数据混入新录制）
+                            if worker.clear_queue():
+                                # 🔥 等待正在处理的帧完成
+                                worker.wait_queue_empty()
+                                # 🔥 最后清空缓冲区（此时保证没有旧数据会再写入）
+                                if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
+                                    dataset.clear_episode_buffer()
+                                # 🔥 3. 录制开始时打印当前是第几条 🔥
+                                print(f"🔴 [REC START] [{current_mode.upper()}] Recording Episode {current_episode_id} ...")
 
-                # [K] 停止并保存 (Success)
+                # [K] 停止并保存 (Success) - Base模式用，Arm模式也可用
                 if PnPEnv.env.is_key_pressed_once(glfw.KEY_K):
-                    if is_recording:
-                        is_recording = False
-                        # 🔥 同步停止环境的录制状态
-                        if current_mode == 'arm':
-                            PnPEnv.is_recording = False
-                            PnPEnv._expert_done_printed = False  # 重置提示标志
-                        pending_frames = worker.qsize()
-                        peak = worker.peak_qsize()
-                        print(f"\n⏳ Saving Episode {current_episode_id}...")
-                        print(f"   📊 Recorded: {current_frames} frames | Queue backlog: {pending_frames} | Peak: {peak}")
-                        
-                        # 🔥 带进度的等待
-                        while worker.qsize() > 0:
-                            remaining = worker.qsize()
-                            progress = (pending_frames - remaining) / max(pending_frames, 1) * 100
-                            print(f"   ⏳ Processing: {pending_frames - remaining}/{pending_frames} ({progress:.0f}%) - {remaining} remaining...", end='\r')
-                            time.sleep(0.5)
-                        worker.wait_queue_empty()  # 最终确认
-                        print(f"\n   ✅ Queue cleared!                                          ")
-                        
-                        dataset.save_episode()
-                        print(f"✅ [SAVED] [{current_mode.upper()}] Episode {current_episode_id} saved ({current_frames} frames).")
-                        episode_ids[current_mode] += 1
+                    if is_recording or (current_mode == 'arm' and hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None and len(dataset.episode_buffer) > 0):
+                        # 🔥 检查是否已有保存操作在进行
+                        if worker.saving_in_progress:
+                            print(f"\n⚠️ [K] Save operation already in progress. Please wait...")
+                        else:
+                            is_recording = False
+                            # 🔥 同步停止环境的录制状态
+                            if current_mode == 'arm':
+                                PnPEnv.is_recording = False
+                                PnPEnv._expert_done_printed = False  # 重置提示标志
+                                PnPEnv._waiting_for_save = False     # 🔥 重置队列显示等待标志
+                            
+                            # 🔥 设置保存标志（防止竞态条件）
+                            worker.saving_in_progress = True
+                            
+                            pending_frames = worker.qsize()
+                            peak = worker.peak_qsize()
+                            print(f"\n⏳ Saving Episode {current_episode_id}...")
+                            print(f"   📊 Recorded: {current_frames} frames | Queue backlog: {pending_frames} | Peak: {peak}")
+                            
+                            try:
+                                # 🔥 带进度的等待（显示队列状态）
+                                while worker.qsize() > 0:
+                                    remaining = worker.qsize()
+                                    progress = (pending_frames - remaining) / max(pending_frames, 1) * 100
+                                    print(f"   ⏳ Processing: {pending_frames - remaining}/{pending_frames} ({progress:.0f}%) - {remaining} frames remaining in queue...", end='\r')
+                                    time.sleep(0.5)
+                                worker.wait_queue_empty()  # 最终确认
+                                print(f"\n   ✅ Queue cleared!                                          ")
+                                
+                                dataset.save_episode()
+                                print(f"✅ [SAVED] [{current_mode.upper()}] Episode {current_episode_id} saved ({current_frames} frames).")
+                                episode_ids[current_mode] += 1
+                            finally:
+                                # 🔥 重置保存标志
+                                worker.saving_in_progress = False
 
-                # [Q] 停止并废弃 (Discard / Fail)
-                if PnPEnv.env.is_key_pressed_once(glfw.KEY_Q):
-                    if is_recording:
-                        is_recording = False
-                        # 🔥 同步停止环境的录制状态
-                        if current_mode == 'arm':
-                            PnPEnv.is_recording = False
-                            PnPEnv._expert_done_printed = False  # 重置提示标志
-                        # 🔥 仅在 episode_buffer 存在时清空（作为保险）
-                        if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
-                            dataset.clear_episode_buffer() # 清空缓存，不保存
-                        print(f"❌ [DISCARDED] [{current_mode.upper()}] Episode {current_episode_id} data cleared. (ID unchanged)")
+                # 🔥 [U] 保存已暂停的录制 (Arm模式专用，用于专家策略自动录制后的手动确认保存)
+                if PnPEnv.env.is_key_pressed_once(glfw.KEY_U):
+                    if current_mode == 'arm':
+                        # 🔥 检查：如果录制还在进行中，不允许保存
+                        if is_recording:
+                            print(f"\n⚠️ [U] Invalid operation: Cannot save while recording is still in progress.")
+                            print(f"   Reason: Recording flag is active (is_recording=True). Please wait for recording to finish.")
+                            if PnPEnv.expert_executing or PnPEnv.expert_pending or PnPEnv.expert_waiting_save:
+                                print(f"   Status: Expert policy is {'executing' if PnPEnv.expert_executing else 'pending' if PnPEnv.expert_pending else 'in post-wait period'}.")
+                        # 🔥 检查：如果队列中还有待处理的帧，不允许保存
+                        elif worker.qsize() > 0:
+                            queue_size = worker.qsize()
+                            print(f"\n⚠️ [U] Invalid operation: Cannot save while frames are still being processed.")
+                            print(f"   Reason: Queue still has {queue_size} frame(s) waiting to be processed in background.")
+                            print(f"   Please wait for queue to clear (watch the queue counter above).")
+                        else:
+                            # 检查是否有待保存的数据
+                            if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None and len(dataset.episode_buffer) > 0:
+                                # 🔥 检查是否已有保存操作在进行
+                                if worker.saving_in_progress:
+                                    print(f"\n⚠️ [U] Invalid operation: Save operation already in progress.")
+                                    print(f"   Reason: Another save operation is currently running. Please wait for it to complete.")
+                                else:
+                                    # 🔥 设置保存标志（防止竞态条件）
+                                    worker.saving_in_progress = True
+                                    
+                                    pending_frames = worker.qsize()
+                                    peak = worker.peak_qsize()
+                                    print(f"\n⏳ [U] Saving paused recording Episode {current_episode_id}...")
+                                    print(f"   📊 Buffered: {current_frames} frames | Queue backlog: {pending_frames} | Peak: {peak}")
+                                    
+                                    try:
+                                        # 🔥 带进度的等待（显示队列状态）
+                                        while worker.qsize() > 0:
+                                            remaining = worker.qsize()
+                                            progress = (pending_frames - remaining) / max(pending_frames, 1) * 100
+                                            print(f"   ⏳ Processing: {pending_frames - remaining}/{pending_frames} ({progress:.0f}%) - {remaining} frames remaining in queue...", end='\r')
+                                            time.sleep(0.5)
+                                        worker.wait_queue_empty()  # 最终确认
+                                        print(f"\n   ✅ Queue cleared!                                          ")
+                                        
+                                        dataset.save_episode()
+                                        print(f"✅ [SAVED] [{current_mode.upper()}] Episode {current_episode_id} saved ({current_frames} frames).")
+                                        episode_ids[current_mode] += 1
+                                        PnPEnv._expert_done_printed = False  # 重置提示标志
+                                        PnPEnv._waiting_for_save = False  # 🔥 重置等待标志
+                                    finally:
+                                        # 🔥 重置保存标志
+                                        worker.saving_in_progress = False
+                            else:
+                                print(f"⚠️ [U] Invalid operation: No buffered data to save.")
+                                print(f"   Reason: Episode buffer is empty. No frames have been recorded yet.")
+                    else:
+                        print(f"⚠️ [U] Invalid operation: Save function only available in ARM mode.")
+                        print(f"   Reason: Current mode is {current_mode.upper()}. Use [K] key for BASE mode.")
+
+                # 🔥 [I] 丢弃录制 (两种模式通用)
+                if PnPEnv.env.is_key_pressed_once(glfw.KEY_I):
+                    # 检查是否正在录制或有待保存的数据
+                    has_buffered_data = hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None and len(dataset.episode_buffer) > 0
+                    has_queue_data = worker.qsize() > 0
+                    if is_recording or has_buffered_data or has_queue_data:
+                        # 🔥 检查是否正在保存
+                        if worker.saving_in_progress:
+                            print(f"\n⚠️ [I] Cannot discard: Save operation in progress. Please wait for save to complete.")
+                        else:
+                            is_recording = False
+                            # 🔥 同步停止环境的录制状态
+                            if current_mode == 'arm':
+                                PnPEnv.is_recording = False
+                                PnPEnv._expert_done_printed = False  # 重置提示标志
+                                PnPEnv.expert_waiting_save = False   # 🔥 重置等待状态
+                                PnPEnv._waiting_for_save = False     # 🔥 重置队列显示等待标志
+                            # 🔥 先清空队列（防止新数据继续进入）
+                            if worker.clear_queue():
+                                # 🔥 等待正在处理的帧完成并写入缓冲区（确保所有数据都被捕获）
+                                worker.wait_queue_empty()
+                                # 🔥 最后清空缓冲区（包括刚才写入的帧）
+                                if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
+                                    dataset.clear_episode_buffer()
+                                print(f"❌ [DISCARDED] [{current_mode.upper()}] Episode {current_episode_id} data cleared. (ID unchanged)")
 
                 # ================= 🔥 [C] 热切换模式 🔥 =================
                 if PnPEnv.env.is_key_pressed_once(glfw.KEY_C):
-                    # 如果正在录制，先停止并丢弃
-                    if is_recording:
-                        is_recording = False
-                        # 🔥 同步停止环境的录制状态
-                        if current_mode == 'arm':
-                            PnPEnv.is_recording = False
-                        if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
-                            dataset.clear_episode_buffer()
-                        print(f"⚠️ [RECORDING STOPPED] Discarding current recording before switch.")
-                    
-                    # 等待队列清空
-                    worker.wait_queue_empty()
+                    # 🔥 检查是否正在保存
+                    if worker.saving_in_progress:
+                        print(f"\n⚠️ [C] Cannot switch mode: Save operation in progress. Please wait for save to complete.")
+                    else:
+                        # 如果正在录制，先停止并丢弃
+                        if is_recording:
+                            is_recording = False
+                            # 🔥 同步停止环境的录制状态
+                            if current_mode == 'arm':
+                                PnPEnv.is_recording = False
+                                PnPEnv._waiting_for_save = False  # 🔥 重置队列显示等待标志
+                            # 🔥 先清空队列
+                            if worker.clear_queue():
+                                # 🔥 再清空缓冲区
+                                if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
+                                    dataset.clear_episode_buffer()
+                                print(f"⚠️ [RECORDING STOPPED] Discarding current recording before switch.")
+                        
+                        # 等待队列清空（确保没有残留）
+                        worker.wait_queue_empty()
                     
                     # 切换模式
                     old_mode = current_mode
                     current_mode = 'arm' if current_mode == 'base' else 'base'
+                    
+                    # 🔥 清空新模式的缓冲区（防止旧数据混入新录制）
+                    new_dataset = datasets[current_mode]
+                    if hasattr(new_dataset, 'episode_buffer') and new_dataset.episode_buffer is not None:
+                        new_dataset.clear_episode_buffer()
                     
                     # 🔥 关键：不调用 reset()，只更新环境的 control_mode
                     PnPEnv.control_mode = current_mode
@@ -373,29 +529,59 @@ def main():
                     # 🔥 同步停止环境的录制状态
                     if current_mode == 'arm':
                         PnPEnv.is_recording = False
-                    if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
-                        dataset.clear_episode_buffer()
-                    print(f"\n⚠️ [TIMEOUT] Max duration ({MAX_EPISODE_SEC}s) reached!")
-                    print(f"❌ [AUTO-DISCARDED] [{current_mode.upper()}] Episode {current_episode_id} data cleared. (ID unchanged)")
+                        PnPEnv._waiting_for_save = False  # 🔥 重置队列显示等待标志
+                    # 🔥 检查是否正在保存
+                    if worker.saving_in_progress:
+                        print(f"\n⚠️ [TIMEOUT] Max duration reached, but save operation in progress. Will discard after save completes.")
+                    else:
+                        # 🔥 先清空队列（防止新数据继续进入）
+                        if worker.clear_queue():
+                            # 🔥 等待正在处理的帧完成并写入缓冲区（确保所有数据都被捕获）
+                            worker.wait_queue_empty()
+                            # 🔥 最后清空缓冲区（包括刚才写入的帧）
+                            if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
+                                dataset.clear_episode_buffer()
+                            print(f"\n⚠️ [TIMEOUT] Max duration ({MAX_EPISODE_SEC}s) reached!")
+                            print(f"❌ [AUTO-DISCARDED] [{current_mode.upper()}] Episode {current_episode_id} data cleared. (ID unchanged)")
                 
                 # ===========================================================
 
+                # 🔥 V4.1: 数据收集优化 - 图像在 step 之前获取（与原始工程一致）
+                # 先获取当前状态的图像（用于数据记录）
+                if is_recording:
+                    # grab_image 这里只做内存拷贝，不做 Resize，速度快很多
+                    images_dict_raw = PnPEnv.grab_image()
+                    # 必须使用 .copy()，因为 images_dict_raw 可能会在下一帧被覆盖
+                    images_dict_safe = {k: v.copy() for k, v in images_dict_raw.items()}
+                
                 # 机器人控制
                 action, reset = PnPEnv.teleop_robot(mode=current_mode)
                 
                 # [Z] 手动重置环境
                 if reset:
-                    print("🔄 Environment Reset.")
-                    # 🔥 先停止录制（如果正在录制）
-                    if is_recording:
-                        is_recording = False
+                    # 🔥 检查是否正在保存
+                    if worker.saving_in_progress:
+                        print(f"\n⚠️ [Z] Cannot reset: Save operation in progress. Please wait for save to complete.")
+                    else:
+                        print("🔄 Environment Reset.")
+                        # 🔥 先停止录制（如果正在录制）
+                        if is_recording:
+                            is_recording = False
+                            if current_mode == 'arm':
+                                PnPEnv.is_recording = False
+                                PnPEnv._waiting_for_save = False  # 🔥 重置队列显示等待标志
+                            print(f"⚠️ [INTERRUPTED] Recording stopped due to reset. (ID {current_episode_id})")
+                        # 🔥 也需要重置等待状态（即使不在录制中，可能是暂停状态）
                         if current_mode == 'arm':
-                            PnPEnv.is_recording = False
-                        print(f"⚠️ [INTERRUPTED] Recording stopped due to reset. (ID {current_episode_id})")
-                    PnPEnv.reset(mode=current_mode)
-                    # 🔥 仅在 episode_buffer 存在时清空（作为保险）
-                    if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
-                        dataset.clear_episode_buffer()
+                            PnPEnv._waiting_for_save = False
+                        PnPEnv.reset(mode=current_mode)
+                        # 🔥 先清空队列（防止新数据继续进入）
+                        if worker.clear_queue():
+                            # 🔥 等待正在处理的帧完成并写入缓冲区（确保所有数据都被捕获）
+                            worker.wait_queue_empty()
+                            # 🔥 最后清空缓冲区（包括刚才写入的帧）
+                            if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
+                                dataset.clear_episode_buffer()
 
                 # 物理执行
                 current_state = PnPEnv.step(action, mode=current_mode)
@@ -407,11 +593,6 @@ def main():
 
                 # 🔥 数据收集：异步处理模式 🔥
                 if is_recording:
-                    # grab_image 这里只做内存拷贝，不做 Resize，速度快很多
-                    images_dict_raw = PnPEnv.grab_image()
-                    
-                    # 必须使用 .copy()，因为 images_dict_raw 可能会在下一帧被覆盖
-                    images_dict_safe = {k: v.copy() for k, v in images_dict_raw.items()}
 
                     # 🔥 获取真实位姿 (Ground Truth) - 仅在 base 模式下
                     if current_mode == 'base':
