@@ -40,16 +40,16 @@ EXPERT_Z_NOISE = 0.005               # Z轴高度微小随机噪声 (Z height no
 # --- 🔥 动态步数参数（基于距离计算，提高数据多样性）---
 # 末端执行器速度参数（米/步），用于根据距离动态计算步数
 # 🔥 V4.1: 速度减半，使单条数据集时长变为原来的2倍
-EXPERT_SPEED_APPROACH = 0.006        # 接近阶段速度 (Approach speed, m/step) - 原0.012减半
+EXPERT_SPEED_APPROACH = 0.008        # 接近阶段速度 (Approach speed, m/step) - 原0.012减半
 EXPERT_SPEED_DESCEND = 0.005         # 下降阶段速度 (Descend speed, m/step) - 原0.010减半
-EXPERT_SPEED_LIFT = 0.004            # 提升阶段速度 (Lift speed, m/step) - 原0.008减半
-EXPERT_SPEED_TRANSPORT = 0.004       # 运输阶段速度 (Transport speed, m/step) - 原0.008减半
-EXPERT_SPEED_LOWER = 0.004           # 下降到放置点速度 (Lower speed, m/step) - 原0.008减半
-EXPERT_SPEED_RETRACT = 0.005         # 撤离阶段速度 (Retract speed, m/step) - 原0.010减半
+EXPERT_SPEED_LIFT = 0.006            # 提升阶段速度 (Lift speed, m/step) - 原0.008减半
+EXPERT_SPEED_TRANSPORT = 0.008       # 运输阶段速度 (Transport speed, m/step) - 原0.008减半
+EXPERT_SPEED_LOWER = 0.006           # 下降到放置点速度 (Lower speed, m/step) - 原0.008减半
+EXPERT_SPEED_RETRACT = 0.006         # 撤离阶段速度 (Retract speed, m/step) - 原0.010减半
 
 # 最小/最大步数限制（防止极端情况）
 EXPERT_MIN_STEPS = 8                 # 任何阶段的最小步数 (Min steps for any phase)
-EXPERT_MAX_STEPS = 80                # 任何阶段的最大步数 (Max steps for any phase)
+EXPERT_MAX_STEPS = 200                # 任何阶段的最大步数 (Max steps for any phase)
 
 # 等待阶段步数（带随机扰动范围）
 EXPERT_GRASP_WAIT_BASE = 8           # 抓取等待基础步数 (Grasp wait base steps)
@@ -93,9 +93,9 @@ CUP_POSITION_NOISE = 0.02            # 杯子位置随机范围 ±2cm (Cup posit
 # 🔥 V4.1.2: 拉开杯子间距（均匀分布，每个间隔 0.20m）
 CUP_FIXED_POSITIONS = {
     'body_obj_mug_5': (-0.12, -0.30, 0.345),   # 红色 - 最左
-    'body_obj_mug_6': (-0.08, -0.10, 0.345),   # 蓝色 - 左中
-    'body_obj_mug_7': (-0.04,  0.10, 0.345),   # 黄色 - 右中
-    'body_obj_mug_8': (-0.08,  0.30, 0.345),   # 绿色 - 最右
+    'body_obj_mug_6': (-0.04, -0.15, 0.345),   # 蓝色 - 左中
+    'body_obj_mug_7': (-0.10,  0.10, 0.345),   # 黄色 - 右中
+    'body_obj_mug_8': (-0.24,  0.20, 0.345),   # 绿色 - 最右
 }
 
 # --- 杯子数量概率分布 ---

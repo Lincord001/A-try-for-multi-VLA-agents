@@ -4,8 +4,8 @@ from lerobot.common.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.configs.types import FeatureType
 
 # 1. 指向你包含 base_pose 的新数据集目录
-ROOT = "./demo_data_base_v4" 
-REPO_NAME = "omy_base_data"
+ROOT = "./demo_data_arm_v4" 
+REPO_NAME = "omy_arm_data_v4"
 
 try:
     # 加载数据集元数据

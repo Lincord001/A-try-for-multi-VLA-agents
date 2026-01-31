@@ -10,43 +10,58 @@ from PIL import Image  # 🔥 V4.1: 改回 PIL，与部署环境保持一致
 from mujoco_env.y_env4 import SimpleEnv4 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
-# ================= 🛡️ 安全配置区域 🛡️ =================
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                    🎛️ 常用配置（频繁调整区）🎛️                               ║
+# ║          以下参数是您最可能需要修改的，已按使用频率排序                         ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
-# 初始模式选择（可通过 C 键热切换）
-INITIAL_MODE = 'arm'  # 'arm' 或 'base'
+# --- 🤖 全自动录制 [P键] ---
+AUTO_RECORD_TARGET_EPISODES = 1    # 🎯 目标录制条数（达到后自动停止）
+AUTO_SHUTDOWN_ON_COMPLETE = True     # 🔌 完成后是否自动关闭仿真环境
 
-# ================= 📁 数据集配置 📁 =================
-# 两种模式的数据集配置（支持热切换，同时管理两个数据集）
+# --- 📁 数据集名称与路径 ---
+ARM_DATASET_NAME = 'omy_arm_data_v4'       # Arm 模式数据集名称
+ARM_DATASET_ROOT = './demo_data_arm_v4'    # Arm 模式数据集保存路径
+BASE_DATASET_NAME = 'omy_base_data_v4'     # Base 模式数据集名称  
+BASE_DATASET_ROOT = './demo_data_base_v4'  # Base 模式数据集保存路径
 
-DATASET_CONFIG = {
-    'arm': {
-        'repo_name': 'omy_arm_data_v4',
-        'root': "./demo_data_arm_v4",
-    },
-    'base': {
-        'repo_name': 'omy_base_data_v4',
-        'root': "./demo_data_base_v4",
-    }
-}
+# --- 🖼️ 图像与录制 ---
+IMG_SIZE = 224                       # 图像分辨率 (224=ViT标准, 256=兼容旧数据)
+FPS = 20                             # 录制帧率 (Hz)
+MAX_EPISODE_SEC = 200                # 单条数据最大时长（秒），超时自动丢弃
 
-# ================= ⚙️ 场景配置 ⚙️ =================
+# --- 🎮 初始模式 ---
+INITIAL_MODE = 'arm'                 # 启动时的模式: 'arm' 或 'base'
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                    ⚙️ 高级配置（一般不需要修改）⚙️                            ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# --- 全自动录制细节参数 ---
+AUTO_RESET_WAIT_FRAMES = 40          # 重置后等待帧数（约2秒，让物理引擎稳定）
+AUTO_CUP_CHECK_TOLERANCE = 0.05      # 杯子 z 坐标容差（±5cm，超出判定为倒了）
+AUTO_CUP_EXPECTED_Z = 0.345          # 杯子正常 z 坐标
+AUTO_POST_SAVE_WAIT_FRAMES = 20      # 保存后等待帧数（约1秒）
+AUTO_MAX_RESET_RETRIES = 5           # 杯子倒了时最大重试次数
+
+# --- 场景配置 ---
 SEED = 0 
 XML_PATH = './asset/example_scene_y4.xml'
 
-# 🔥 安全熔断设置 🔥
-# 单条数据最大录制时长 (秒)
-# 超过这个时间将自动丢弃，防止内存溢出
-MAX_EPISODE_SEC = 200  
-FPS = 20
+# --- 派生配置（自动计算，勿手动修改）---
 MAX_FRAMES = MAX_EPISODE_SEC * FPS
 
-# 🔥 图像分辨率配置（影响数据量和训练速度）
-# 256x256: 标准，兼容现有数据
-# 224x224: ViT 标准输入，减少 23% 数据量（推荐）
-# 196x196: 进一步压缩，减少 41% 数据量
-IMG_SIZE = 224  # ← 修改这里来调整分辨率
+DATASET_CONFIG = {
+    'arm': {
+        'repo_name': ARM_DATASET_NAME,
+        'root': ARM_DATASET_ROOT,
+    },
+    'base': {
+        'repo_name': BASE_DATASET_NAME,
+        'root': BASE_DATASET_ROOT,
+    }
+}
 
-# 各模式的动作和状态维度配置
 MODE_CONFIG = {
     'arm': {
         'action_shape': (7,),
@@ -57,6 +72,16 @@ MODE_CONFIG = {
         'state_shape': (2,),
     }
 }
+
+# --- 自动录制状态机常量（内部使用，勿修改）---
+AUTO_STATE_IDLE = 0
+AUTO_STATE_RESETTING = 1
+AUTO_STATE_CHECK_CUPS = 2
+AUTO_STATE_START_EXPERT = 3
+AUTO_STATE_EXECUTING = 4
+AUTO_STATE_WAIT_QUEUE = 5
+AUTO_STATE_SAVING = 6
+AUTO_STATE_POST_SAVE = 7
 
 # ================= 🧵 异步处理工作线程 🧵 =================
 
@@ -251,6 +276,13 @@ def main():
 
     is_recording = False
     current_frames = 0
+    
+    # 🤖 全自动录制状态变量
+    auto_state = AUTO_STATE_IDLE           # 当前自动录制状态
+    auto_recorded_count = 0                # 已录制的 episode 数量
+    auto_wait_counter = 0                  # 等待计数器（帧数）
+    auto_reset_retries = 0                 # 杯子倒了重试次数
+    auto_shutdown_requested = False        # 🔥 是否请求自动关闭
 
     print("\n" + "="*60)
     print(f" 🚀 DATA COLLECTION MODE: {current_mode.upper()} (HOT-SWITCH ENABLED)")
@@ -274,12 +306,17 @@ def main():
     print("  [U] : 🔥 SAVE Paused Recording (保存暂停的录制) [NEW!]")
     print("  [O] : 🏠 Smooth Return Home (平滑归位机械臂)")
     print("-"*60)
+    print(" 🤖🔄 FULL-AUTO Recording (全自动录制):")
+    print(f"  [P] : 🔥 Start/Stop Full-Auto Mode (Target: {AUTO_RECORD_TARGET_EPISODES} episodes)")
+    print("        → Auto: Reset → Check Cups → Expert → Save → Loop")
+    print("        → Press [P] again to STOP (discard current recording)")
+    print("-"*60)
     print(f" Current Mode: {current_mode.upper()} | Next Episode ID: {episode_ids[current_mode]}")
     print("="*60 + "\n")
 
     try:
         # 🔥 2. 移除 NUM_DEMO 限制，实现无限录制 🔥
-        while PnPEnv.env.is_viewer_alive():
+        while PnPEnv.env.is_viewer_alive() and not auto_shutdown_requested:
             PnPEnv.step_env()
             
             if PnPEnv.env.loop_every(HZ=FPS):
@@ -288,10 +325,132 @@ def main():
                 dataset = datasets[current_mode]
                 current_episode_id = episode_ids[current_mode]
                 
+                # ================= 🤖 全自动录制状态机 🤖 =================
+                if auto_state != AUTO_STATE_IDLE and current_mode == 'arm':
+                    
+                    # ----- STATE: RESETTING -----
+                    if auto_state == AUTO_STATE_RESETTING:
+                        # 执行重置
+                        PnPEnv.reset(mode='arm')
+                        # 清空残留数据
+                        worker.clear_queue()
+                        if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
+                            dataset.clear_episode_buffer()
+                        auto_wait_counter = AUTO_RESET_WAIT_FRAMES
+                        auto_state = AUTO_STATE_CHECK_CUPS
+                        print(f"   ⏳ Waiting {AUTO_RESET_WAIT_FRAMES} frames for physics to stabilize...")
+                    
+                    # ----- STATE: CHECK_CUPS (等待物理稳定 + 检查杯子) -----
+                    elif auto_state == AUTO_STATE_CHECK_CUPS:
+                        auto_wait_counter -= 1
+                        if auto_wait_counter <= 0:
+                            # 检查所有杯子的 z 坐标
+                            cups_ok = True
+                            cup_names = ['body_obj_mug_5', 'body_obj_mug_6', 'body_obj_mug_7', 'body_obj_mug_8']
+                            for cup_name in cup_names:
+                                try:
+                                    cup_z = PnPEnv.env.get_p_body(cup_name)[2]
+                                    if abs(cup_z - AUTO_CUP_EXPECTED_Z) > AUTO_CUP_CHECK_TOLERANCE:
+                                        cups_ok = False
+                                        print(f"   ⚠️ Cup {cup_name} fallen! (z={cup_z:.3f}, expected={AUTO_CUP_EXPECTED_Z})")
+                                        break
+                                except Exception as e:
+                                    print(f"   ⚠️ Error checking cup {cup_name}: {e}")
+                                    cups_ok = False
+                                    break
+                            
+                            if cups_ok:
+                                # 杯子正常，启动专家策略
+                                auto_reset_retries = 0
+                                auto_state = AUTO_STATE_START_EXPERT
+                                print(f"   ✅ All cups OK. Starting expert policy...")
+                            else:
+                                # 杯子倒了，重新重置
+                                auto_reset_retries += 1
+                                if auto_reset_retries >= AUTO_MAX_RESET_RETRIES:
+                                    print(f"   ❌ Max reset retries ({AUTO_MAX_RESET_RETRIES}) reached! Stopping Full-Auto Mode.")
+                                    auto_state = AUTO_STATE_IDLE
+                                else:
+                                    print(f"   🔄 Retry {auto_reset_retries}/{AUTO_MAX_RESET_RETRIES}: Resetting environment again...")
+                                    auto_state = AUTO_STATE_RESETTING
+                    
+                    # ----- STATE: START_EXPERT -----
+                    elif auto_state == AUTO_STATE_START_EXPERT:
+                        # 清空残留状态
+                        is_recording = False
+                        current_frames = 0
+                        PnPEnv.is_recording = False
+                        PnPEnv._expert_done_printed = False
+                        PnPEnv._waiting_for_save = False
+                        
+                        # 启动专家策略（带录制）
+                        PnPEnv.auto_execute_task(record=True)
+                        auto_state = AUTO_STATE_EXECUTING
+                        print(f"   🤖 Expert policy started. Recording Episode {episode_ids['arm']}...")
+                    
+                    # ----- STATE: EXECUTING (专家策略执行中) -----
+                    elif auto_state == AUTO_STATE_EXECUTING:
+                        # 检查专家策略是否完成（包括 post-wait）
+                        if not PnPEnv.expert_pending and not PnPEnv.expert_executing and not PnPEnv.expert_waiting_save:
+                            # 专家策略执行完毕
+                            is_recording = False  # 确保本地录制标志关闭
+                            auto_state = AUTO_STATE_WAIT_QUEUE
+                            print(f"\n   ✅ Expert execution finished. Waiting for queue to clear...")
+                    
+                    # ----- STATE: WAIT_QUEUE (等待队列清空) -----
+                    elif auto_state == AUTO_STATE_WAIT_QUEUE:
+                        queue_size = worker.qsize()
+                        if queue_size > 0:
+                            # 显示队列进度
+                            print(f"\r   ⏳ Queue: {queue_size} frames remaining...   ", end='', flush=True)
+                        else:
+                            # 队列清空，开始保存
+                            print(f"\r   ✅ Queue cleared!                           ")
+                            auto_state = AUTO_STATE_SAVING
+                    
+                    # ----- STATE: SAVING -----
+                    elif auto_state == AUTO_STATE_SAVING:
+                        try:
+                            worker.saving_in_progress = True
+                            worker.wait_queue_empty()  # 最终确认
+                            dataset.save_episode()
+                            episode_ids['arm'] += 1
+                            auto_recorded_count += 1
+                            print(f"   ✅ [AUTO-SAVED] Episode {episode_ids['arm'] - 1} saved! ({auto_recorded_count}/{AUTO_RECORD_TARGET_EPISODES})")
+                        except Exception as e:
+                            print(f"   ❌ Save error: {e}")
+                        finally:
+                            worker.saving_in_progress = False
+                        
+                        # 检查是否达到目标
+                        if auto_recorded_count >= AUTO_RECORD_TARGET_EPISODES:
+                            print(f"\n" + "="*60)
+                            print(f" 🎉 FULL-AUTO MODE COMPLETED! 🎉")
+                            print(f" 📊 Total recorded: {auto_recorded_count} episodes")
+                            print(f" 📁 Final Episode ID: {episode_ids['arm']}")
+                            print(f"="*60 + "\n")
+                            auto_state = AUTO_STATE_IDLE
+                            # 🔥 如果设置了自动关闭，请求关闭仿真环境
+                            if AUTO_SHUTDOWN_ON_COMPLETE:
+                                auto_shutdown_requested = True
+                                print("🔌 Auto-shutdown requested. Closing simulation...")
+                        else:
+                            # 继续下一轮
+                            auto_wait_counter = AUTO_POST_SAVE_WAIT_FRAMES
+                            auto_state = AUTO_STATE_POST_SAVE
+                    
+                    # ----- STATE: POST_SAVE (保存后等待) -----
+                    elif auto_state == AUTO_STATE_POST_SAVE:
+                        auto_wait_counter -= 1
+                        if auto_wait_counter <= 0:
+                            print(f"\n🔄 [AUTO] Resetting for next episode ({auto_recorded_count + 1}/{AUTO_RECORD_TARGET_EPISODES})...")
+                            auto_state = AUTO_STATE_RESETTING
+                
                 # ================= 按键逻辑 =================
                 
                 # 🔥 同步环境的录制状态（用于Y键自动录制）
-                if current_mode == 'arm':
+                # 🔥 注意：全自动模式下跳过手动录制同步逻辑
+                if current_mode == 'arm' and auto_state == AUTO_STATE_IDLE:
                     # 如果环境开始录制，但本地还没开始，则同步开始
                     if PnPEnv.is_recording and not is_recording:
                         # 🔥 检查是否正在保存
@@ -336,9 +495,11 @@ def main():
                                 print(f"\r   📊 Queue: All frames processed.                                   ")
                                 PnPEnv._queue_line_printed = False  # 重置标志
                 
-                # [J] 开始录制
+                # [J] 开始录制 (全自动模式下禁用)
                 if PnPEnv.env.is_key_pressed_once(glfw.KEY_J):
-                    if not is_recording:
+                    if auto_state != AUTO_STATE_IDLE:
+                        print(f"\n⚠️ [J] Disabled: Full-Auto Mode is active. Press [P] to stop first.")
+                    elif not is_recording:
                         # 🔥 检查是否正在保存
                         if worker.saving_in_progress:
                             print(f"\n⚠️ [J] Cannot start recording: Save operation in progress. Please wait...")
@@ -355,9 +516,11 @@ def main():
                                 # 🔥 3. 录制开始时打印当前是第几条 🔥
                                 print(f"🔴 [REC START] [{current_mode.upper()}] Recording Episode {current_episode_id} ...")
 
-                # [K] 停止并保存 (Success) - Base模式用，Arm模式也可用
+                # [K] 停止并保存 (Success) - Base模式用，Arm模式也可用 (全自动模式下禁用)
                 if PnPEnv.env.is_key_pressed_once(glfw.KEY_K):
-                    if is_recording or (current_mode == 'arm' and hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None and len(dataset.episode_buffer) > 0):
+                    if auto_state != AUTO_STATE_IDLE:
+                        print(f"\n⚠️ [K] Disabled: Full-Auto Mode is active. Press [P] to stop first.")
+                    elif is_recording or (current_mode == 'arm' and hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None and len(dataset.episode_buffer) > 0):
                         # 🔥 检查是否已有保存操作在进行
                         if worker.saving_in_progress:
                             print(f"\n⚠️ [K] Save operation already in progress. Please wait...")
@@ -394,9 +557,11 @@ def main():
                                 # 🔥 重置保存标志
                                 worker.saving_in_progress = False
 
-                # 🔥 [U] 保存已暂停的录制 (Arm模式专用，用于专家策略自动录制后的手动确认保存)
+                # 🔥 [U] 保存已暂停的录制 (Arm模式专用，用于专家策略自动录制后的手动确认保存) (全自动模式下禁用)
                 if PnPEnv.env.is_key_pressed_once(glfw.KEY_U):
-                    if current_mode == 'arm':
+                    if auto_state != AUTO_STATE_IDLE:
+                        print(f"\n⚠️ [U] Disabled: Full-Auto Mode is active. Press [P] to stop first.")
+                    elif current_mode == 'arm':
                         # 🔥 检查：如果录制还在进行中，不允许保存
                         if is_recording:
                             print(f"\n⚠️ [U] Invalid operation: Cannot save while recording is still in progress.")
@@ -450,36 +615,93 @@ def main():
                         print(f"⚠️ [U] Invalid operation: Save function only available in ARM mode.")
                         print(f"   Reason: Current mode is {current_mode.upper()}. Use [K] key for BASE mode.")
 
-                # 🔥 [I] 丢弃录制 (两种模式通用)
+                # 🔥 [I] 丢弃录制 (两种模式通用) (全自动模式下禁用)
                 if PnPEnv.env.is_key_pressed_once(glfw.KEY_I):
-                    # 检查是否正在录制或有待保存的数据
-                    has_buffered_data = hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None and len(dataset.episode_buffer) > 0
-                    has_queue_data = worker.qsize() > 0
-                    if is_recording or has_buffered_data or has_queue_data:
-                        # 🔥 检查是否正在保存
-                        if worker.saving_in_progress:
-                            print(f"\n⚠️ [I] Cannot discard: Save operation in progress. Please wait for save to complete.")
-                        else:
-                            is_recording = False
-                            # 🔥 同步停止环境的录制状态
-                            if current_mode == 'arm':
-                                PnPEnv.is_recording = False
-                                PnPEnv._expert_done_printed = False  # 重置提示标志
-                                PnPEnv.expert_waiting_save = False   # 🔥 重置等待状态
-                                PnPEnv._waiting_for_save = False     # 🔥 重置队列显示等待标志
-                            # 🔥 先清空队列（防止新数据继续进入）
-                            if worker.clear_queue():
-                                # 🔥 等待正在处理的帧完成并写入缓冲区（确保所有数据都被捕获）
-                                worker.wait_queue_empty()
-                                # 🔥 最后清空缓冲区（包括刚才写入的帧）
-                                if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
-                                    dataset.clear_episode_buffer()
-                                print(f"❌ [DISCARDED] [{current_mode.upper()}] Episode {current_episode_id} data cleared. (ID unchanged)")
+                    if auto_state != AUTO_STATE_IDLE:
+                        print(f"\n⚠️ [I] Disabled: Full-Auto Mode is active. Press [P] to stop first.")
+                    else:
+                        # 检查是否正在录制或有待保存的数据
+                        has_buffered_data = hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None and len(dataset.episode_buffer) > 0
+                        has_queue_data = worker.qsize() > 0
+                        if is_recording or has_buffered_data or has_queue_data:
+                            # 🔥 检查是否正在保存
+                            if worker.saving_in_progress:
+                                print(f"\n⚠️ [I] Cannot discard: Save operation in progress. Please wait for save to complete.")
+                            else:
+                                is_recording = False
+                                # 🔥 同步停止环境的录制状态
+                                if current_mode == 'arm':
+                                    PnPEnv.is_recording = False
+                                    PnPEnv._expert_done_printed = False  # 重置提示标志
+                                    PnPEnv.expert_waiting_save = False   # 🔥 重置等待状态
+                                    PnPEnv._waiting_for_save = False     # 🔥 重置队列显示等待标志
+                                # 🔥 先清空队列（防止新数据继续进入）
+                                if worker.clear_queue():
+                                    # 🔥 等待正在处理的帧完成并写入缓冲区（确保所有数据都被捕获）
+                                    worker.wait_queue_empty()
+                                    # 🔥 最后清空缓冲区（包括刚才写入的帧）
+                                    if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
+                                        dataset.clear_episode_buffer()
+                                    print(f"❌ [DISCARDED] [{current_mode.upper()}] Episode {current_episode_id} data cleared. (ID unchanged)")
 
-                # ================= 🔥 [C] 热切换模式 🔥 =================
+                # ================= 🤖🔄 [P] 全自动录制模式 🔄🤖 =================
+                if PnPEnv.env.is_key_pressed_once(glfw.KEY_P):
+                    if current_mode != 'arm':
+                        print(f"\n⚠️ [P] Full-Auto Mode only available in ARM mode. Current: {current_mode.upper()}")
+                    elif auto_state != AUTO_STATE_IDLE:
+                        # 🔥 正在自动录制中，按 P 停止
+                        print(f"\n🛑 [P] Stopping Full-Auto Mode...")
+                        print(f"   Recorded {auto_recorded_count}/{AUTO_RECORD_TARGET_EPISODES} episodes before stop.")
+                        
+                        # 丢弃当前正在录制的数据
+                        is_recording = False
+                        PnPEnv.is_recording = False
+                        PnPEnv.expert_executing = False
+                        PnPEnv.expert_pending = False
+                        PnPEnv.expert_waiting_save = False
+                        PnPEnv._expert_done_printed = False
+                        PnPEnv._waiting_for_save = False
+                        
+                        # 清空队列和缓冲区
+                        worker.clear_queue()
+                        worker.wait_queue_empty()
+                        if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
+                            dataset.clear_episode_buffer()
+                        
+                        auto_state = AUTO_STATE_IDLE
+                        print(f"❌ [AUTO-STOPPED] Current recording discarded. Full-Auto Mode DISABLED.")
+                    else:
+                        # 🔥 启动全自动录制
+                        if worker.saving_in_progress:
+                            print(f"\n⚠️ [P] Cannot start Full-Auto Mode: Save operation in progress. Please wait...")
+                        else:
+                            # 先清空任何残留数据
+                            is_recording = False
+                            PnPEnv.is_recording = False
+                            worker.clear_queue()
+                            worker.wait_queue_empty()
+                            if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
+                                dataset.clear_episode_buffer()
+                            
+                            auto_recorded_count = 0
+                            auto_state = AUTO_STATE_RESETTING
+                            auto_wait_counter = 0
+                            auto_reset_retries = 0
+                            
+                            print(f"\n" + "="*60)
+                            print(f" 🤖🔄 FULL-AUTO MODE ACTIVATED 🔄🤖")
+                            print(f" 🎯 Target: {AUTO_RECORD_TARGET_EPISODES} episodes")
+                            print(f" 📁 Dataset: {DATASET_CONFIG['arm']['repo_name']}")
+                            print(f" 🔢 Starting Episode ID: {episode_ids['arm']}")
+                            print(f" ⏱️ Press [P] again to STOP at any time")
+                            print(f"="*60)
+                            print(f"\n🔄 [AUTO] Resetting environment (Episode {auto_recorded_count + 1}/{AUTO_RECORD_TARGET_EPISODES})...")
+
+                # ================= 🔥 [C] 热切换模式 🔥 ================= (全自动模式下禁用)
                 if PnPEnv.env.is_key_pressed_once(glfw.KEY_C):
-                    # 🔥 检查是否正在保存
-                    if worker.saving_in_progress:
+                    if auto_state != AUTO_STATE_IDLE:
+                        print(f"\n⚠️ [C] Disabled: Full-Auto Mode is active. Press [P] to stop first.")
+                    elif worker.saving_in_progress:
                         print(f"\n⚠️ [C] Cannot switch mode: Save operation in progress. Please wait for save to complete.")
                     else:
                         # 如果正在录制，先停止并丢弃
@@ -498,29 +720,29 @@ def main():
                         
                         # 等待队列清空（确保没有残留）
                         worker.wait_queue_empty()
-                    
-                    # 切换模式
-                    old_mode = current_mode
-                    current_mode = 'arm' if current_mode == 'base' else 'base'
-                    
-                    # 🔥 清空新模式的缓冲区（防止旧数据混入新录制）
-                    new_dataset = datasets[current_mode]
-                    if hasattr(new_dataset, 'episode_buffer') and new_dataset.episode_buffer is not None:
-                        new_dataset.clear_episode_buffer()
-                    
-                    # 🔥 关键：不调用 reset()，只更新环境的 control_mode
-                    PnPEnv.control_mode = current_mode
-                    
-                    # 更新任务指令（根据新模式）
-                    PnPEnv.set_instruction()
-                    
-                    # 刷新图像缓存（切换相机）
-                    PnPEnv.grab_image()
-                    
-                    print(f"\n🔄 [HOT-SWITCH] {old_mode.upper()} → {current_mode.upper()}")
-                    print(f"   📍 Environment state preserved (no reset)")
-                    print(f"   📁 Now using: {DATASET_CONFIG[current_mode]['repo_name']}")
-                    print(f"   🔢 Next Episode ID: {episode_ids[current_mode]}\n")
+                        
+                        # 切换模式
+                        old_mode = current_mode
+                        current_mode = 'arm' if current_mode == 'base' else 'base'
+                        
+                        # 🔥 清空新模式的缓冲区（防止旧数据混入新录制）
+                        new_dataset = datasets[current_mode]
+                        if hasattr(new_dataset, 'episode_buffer') and new_dataset.episode_buffer is not None:
+                            new_dataset.clear_episode_buffer()
+                        
+                        # 🔥 关键：不调用 reset()，只更新环境的 control_mode
+                        PnPEnv.control_mode = current_mode
+                        
+                        # 更新任务指令（根据新模式）
+                        PnPEnv.set_instruction()
+                        
+                        # 刷新图像缓存（切换相机）
+                        PnPEnv.grab_image()
+                        
+                        print(f"\n🔄 [HOT-SWITCH] {old_mode.upper()} → {current_mode.upper()}")
+                        print(f"   📍 Environment state preserved (no reset)")
+                        print(f"   📁 Now using: {DATASET_CONFIG[current_mode]['repo_name']}")
+                        print(f"   🔢 Next Episode ID: {episode_ids[current_mode]}\n")
 
                 # ================= 🛡️ 熔断逻辑 (自动停止) 🛡️ =================
                 
@@ -547,8 +769,11 @@ def main():
                 # ===========================================================
 
                 # 🔥 V4.1: 数据收集优化 - 图像在 step 之前获取（与原始工程一致）
+                # 🔥 全自动模式下：在 EXECUTING 阶段自动录制
+                auto_is_recording = (auto_state == AUTO_STATE_EXECUTING and 
+                                     (PnPEnv.expert_pending or PnPEnv.expert_executing or PnPEnv.expert_waiting_save))
                 # 先获取当前状态的图像（用于数据记录）
-                if is_recording:
+                if is_recording or auto_is_recording:
                     # grab_image 这里只做内存拷贝，不做 Resize，速度快很多
                     images_dict_raw = PnPEnv.grab_image()
                     # 必须使用 .copy()，因为 images_dict_raw 可能会在下一帧被覆盖
@@ -557,10 +782,11 @@ def main():
                 # 机器人控制
                 action, reset = PnPEnv.teleop_robot(mode=current_mode)
                 
-                # [Z] 手动重置环境
+                # [Z] 手动重置环境 (全自动模式下禁用)
                 if reset:
-                    # 🔥 检查是否正在保存
-                    if worker.saving_in_progress:
+                    if auto_state != AUTO_STATE_IDLE:
+                        print(f"\n⚠️ [Z] Disabled: Full-Auto Mode is active. Press [P] to stop first.")
+                    elif worker.saving_in_progress:
                         print(f"\n⚠️ [Z] Cannot reset: Save operation in progress. Please wait for save to complete.")
                     else:
                         print("🔄 Environment Reset.")
@@ -592,7 +818,7 @@ def main():
                     action_to_save = action.astype(np.float32)
 
                 # 🔥 数据收集：异步处理模式 🔥
-                if is_recording:
+                if is_recording or auto_is_recording:
 
                     # 🔥 获取真实位姿 (Ground Truth) - 仅在 base 模式下
                     if current_mode == 'base':
@@ -623,7 +849,11 @@ def main():
                 PnPEnv.render(teleop=True, idx=current_episode_id)
 
     except KeyboardInterrupt:
-        print("Interrupted.")
+        print("\n\nInterrupted by user (Ctrl+C).")
+        # 🔥 如果在全自动模式下，显示当前进度
+        if auto_state != AUTO_STATE_IDLE:
+            print(f"   🛑 Full-Auto Mode was active. Progress: {auto_recorded_count}/{AUTO_RECORD_TARGET_EPISODES} episodes saved.")
+            print(f"   ❌ Current recording (if any) will be discarded.")
     finally:
         # 停止后台工作线程
         print("\n🛑 Stopping worker thread...")
