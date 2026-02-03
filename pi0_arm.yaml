@@ -11,13 +11,13 @@ policy:
   pretrained_path: /path/to/your/paligemma-3b-pt-224  # 指向您上传的本地权重路径
 
 save_checkpoint: true
-output_dir: ./ckpt/pi0_arm    # <--- 修改输出目录，避免覆盖
-batch_size: 16                # 根据显存调整
+output_dir: ./ckpt/pi0_arm_v4    # <--- 修改输出目录，避免覆盖
+batch_size: 12                # 根据显存调整
 job_name: pi0_arm
 resume: false
 seed: 42
 num_workers: 4
-steps: 50000                  # 🔥 V4.1: 从 20000 改为 50000（训练更充分，目标 loss < 0.015）
+steps: 20000                  
 
 eval_freq: -1
 log_freq: 50

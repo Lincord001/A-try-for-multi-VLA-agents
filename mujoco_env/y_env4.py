@@ -25,17 +25,26 @@ import glfw
 # --- 高度参数 ---
 EXPERT_Z_TRAVEL_BASE = 0.52          # 巡航基础高度 (Transport cruise height)
 EXPERT_Z_TRAVEL_NOISE = 0.03         # 巡航高度随机扰动范围 ± (Cruise height noise)
-EXPERT_Z_GRASP_BASE = 0.35           # 抓取高度基础值 (Grasp height)
-EXPERT_Z_PLACE_BASE = 0.355          # 放置高度基础值 (Place height)
+EXPERT_Z_GRASP_BASE = 0.325           # 抓取高度基础值 (Grasp height)
+EXPERT_Z_PLACE_BASE = 0.325          # 放置高度基础值 (Place height)
 EXPERT_RETRACT_HEIGHT = 0.55         # 撤离安全高度 (Retract safe height)
 
 # --- 位置偏移与噪声 ---
-EXPERT_XY_NOISE_SCALE = 0.003        # 端点随机噪声范围 ±3mm (Endpoint noise for robustness)
+EXPERT_XY_NOISE_SCALE = 0.01        # 端点随机噪声范围 ±3mm (Endpoint noise for robustness)
 EXPERT_Y_GRASP_OFFSET = 0.067        # 杯子抓取Y轴固定偏移 (Y offset for cup handle)
 # 🔥 [新增] 放置时的 Y 轴固定偏移 (正数向左/上移，负数向右/下移，取决于你的视角)
 EXPERT_Y_PLACE_OFFSET = 0.03         # 建议先试 0.02 (2cm)，觉得不够就改成 0.04
 EXPERT_HOVER_NOISE = 0.01            # 悬停点误差 (Hover point noise)
 EXPERT_Z_NOISE = 0.005               # Z轴高度微小随机噪声 (Z height noise)
+
+# --- 🔥 漏斗移动逻辑参数 (Funnel Approach Parameters) ---
+EXPERT_FUNNEL_HOVER_RADIUS = 0.03   # 悬停点圆半径（米）(Hover point circle radius, 5cm)
+EXPERT_FUNNEL_MID_RADIUS = 0.01     # 中间点圆半径（米）(Mid point circle radius, 1cm)
+
+# --- 🔥 人类抖动模拟参数 (Human Tremor Simulation Parameters) ---
+EXPERT_TREMOR_ENABLED = True           # 是否启用抖动 (Enable tremor)
+EXPERT_TREMOR_AMPLITUDE = 0.002       # 抖动幅度（米）(Tremor amplitude, 2mm)
+EXPERT_TREMOR_SMOOTHNESS = 0.7        # 抖动平滑度 (0-1，越大越平滑) (Tremor smoothness)
 
 # --- 🔥 动态步数参数（基于距离计算，提高数据多样性）---
 # 末端执行器速度参数（米/步），用于根据距离动态计算步数
@@ -71,11 +80,12 @@ EXPERT_BEZIER_TANGENT_MARGIN = 0.05  # 与圆相切时的安全余量（米）(S
 EXPERT_BEZIER_SMALL_CURVE = 0.08     # 直线不穿过圆时的小弧线偏移（米）(Small curve offset when line doesn't cross circle)
 
 # --- 录制缓冲参数 ---
-EXPERT_START_DELAY = 15              # 启动缓冲期步数（约0.75秒，20Hz下）(Pre-recording buffer steps)
+EXPERT_START_DELAY = 0               # 🔥 启动缓冲期步数（已禁用，立即开始录制）(Pre-recording buffer steps)
 EXPERT_POST_WAIT = 60                # 🔥 执行完成后等待步数（3秒，20Hz下）用于人工确认 (Post-execution wait steps)
 
 # ====== 🎲 Object Initialization Parameters (物体初始化参数) ======
 # 这些参数用于控制杯子的随机初始化，可根据需要调整
+# 🔥 注意：PILOT_RUN_MODE 已移至 collect_data_v4.py，通过 SimpleEnv4.__init__ 传入
 
 # --- 机械臂基座位置 ---
 ARM_BASE_X = -0.4                    # 机械臂基座X坐标 (Arm base X position)
@@ -132,11 +142,14 @@ COLLAB_INSTRUCTIONS = [
 ]
 
 class SimpleEnv4:
-    def __init__(self, xml_path, action_type='eef_pose', state_type='joint_angle', seed=None):
+    def __init__(self, xml_path, action_type='eef_pose', state_type='joint_angle', seed=None, pilot_run_mode=False):
         self.env = MuJoCoParserClass(name='Tabletop', rel_xml_path=xml_path)
         self.action_type = action_type
         self.state_type = state_type
         self.joint_names = ['joint1','joint2','joint3','joint4','joint5','joint6']
+        
+        # 🔥 Pilot Run Mode (简单训练模式开关)
+        self.pilot_run_mode = pilot_run_mode  # True: 只生成红色杯子, False: 使用原有逻辑
         
         # 默认模式
         self.control_mode = 'arm' 
@@ -164,6 +177,7 @@ class SimpleEnv4:
         self.is_recording = False         # 录制标志位（用于外部检测是否需要保存图像）
         self.expert_waiting_save = False  # 🔥 是否处于等待保存状态（执行完毕后的等待期）
         self.expert_post_countdown = 0    # 🔥 执行完毕后的等待倒计时
+        self.expert_auto_save = False     # 🔥 是否需要在等待期结束后自动保存（Y键触发）
 
         self.init_viewer()
         self.reset(seed)
@@ -260,6 +274,7 @@ class SimpleEnv4:
         self.is_recording = False
         self.expert_waiting_save = False
         self.expert_post_countdown = 0
+        self.expert_auto_save = False
 
         # 物体初始化
         self._init_objects_demo()
@@ -290,30 +305,77 @@ class SimpleEnv4:
         }
         mug_names = list(mug_info.keys())
         
-        # 🔥 V4.1: 永远4个杯子都在桌上
-        mugs_on_table = mug_names.copy()
+        # ====== 🔥 Pilot Run Mode: 简单训练模式 ======
+        if self.pilot_run_mode:
+            # 简单模式：使用红色方块（更容易抓取），位置要大范围随机
+            red_block = 'body_obj_red_block'
+            mugs_on_table = [red_block]
+            
+            # 记录桌上的物体信息（供 set_instruction 使用）
+            self.mugs_on_table = mugs_on_table
+            self.mug_colors_on_table = {red_block: 'red'}  # 红色方块
+            
+            # 🔥🔥🔥 使用扇形随机分布代替固定位置 🔥🔥🔥
+            # 1. 定义随机范围
+            min_dist = 0.30  # 离机械臂基座最近 30cm
+            max_dist = 0.40  # 离机械臂基座最远 40cm
+            min_angle = -np.radians(30)  # 左偏 30度
+            max_angle = np.radians(30)   # 右偏 30度
+            
+            # 2. 极坐标生成
+            r = random.uniform(min_dist, max_dist)
+            theta = random.uniform(min_angle, max_angle)
+            
+            # 3. 转换为笛卡尔坐标 (相对于机械臂基座 ARM_BASE_X, ARM_BASE_Y)
+            # 注意：ARM_BASE_X 在代码开头已定义 (约 -0.4)
+            x = ARM_BASE_X + r * np.cos(theta)
+            y = ARM_BASE_Y + r * np.sin(theta)
+            # 方块高度：桌面高度 + 方块半高 (0.03m)
+            z = TABLE_Z_HEIGHT + 0.03  # 约 0.36m
+            
+            # 4. 限制在桌面范围内 (Clip，留点边缘余量)
+            x = np.clip(x, TABLE_X_MIN + 0.05, TABLE_X_MAX - 0.05)
+            y = np.clip(y, TABLE_Y_MIN + 0.05, TABLE_Y_MAX - 0.05)
+            
+            self.env.set_p_base_body(body_name=red_block, p=np.array([x, y, z]))
+            self.env.set_R_base_body(body_name=red_block, R=np.eye(3,3))
+            
+            # 隐藏所有杯子（包括红色杯子）到远处
+            hidden_mugs = ['body_obj_mug_5', 'body_obj_mug_6', 'body_obj_mug_7', 'body_obj_mug_8']
+            for idx, mug_name in enumerate(hidden_mugs):
+                hidden_y = HIDDEN_CUP_Y_INTERVAL * (idx + 1)  # 沿Y轴间隔放置
+                self.env.set_p_base_body(
+                    body_name=mug_name,
+                    p=np.array([HIDDEN_CUP_X, hidden_y, HIDDEN_CUP_Z])
+                )
+                self.env.set_R_base_body(body_name=mug_name, R=np.eye(3,3))
         
-        # 记录桌上的杯子信息（供 set_instruction 使用）
-        self.mugs_on_table = mugs_on_table
-        self.mug_colors_on_table = {name: mug_info[name] for name in mugs_on_table}
-        
-        # 🔥 V4.1: 按固定顺序放置杯子，每个杯子在固定位置附近小范围随机
-        for mug_name in mug_names:
-            # 获取该杯子的固定位置
-            base_x, base_y, base_z = CUP_FIXED_POSITIONS[mug_name]
+        else:
+            # ====== 原有逻辑：V4.1 固定4个杯子 ======
+            # 🔥 V4.1: 永远4个杯子都在桌上
+            mugs_on_table = mug_names.copy()
             
-            # 在固定位置附近添加小范围随机扰动 (±2cm)
-            x = base_x + random.uniform(-CUP_POSITION_NOISE, CUP_POSITION_NOISE)
-            y = base_y + random.uniform(-CUP_POSITION_NOISE, CUP_POSITION_NOISE)
-            z = base_z
+            # 记录桌上的杯子信息（供 set_instruction 使用）
+            self.mugs_on_table = mugs_on_table
+            self.mug_colors_on_table = {name: mug_info[name] for name in mugs_on_table}
             
-            # 确保杯子在桌面范围内
-            x = np.clip(x, TABLE_X_MIN, TABLE_X_MAX)
-            y = np.clip(y, TABLE_Y_MIN, TABLE_Y_MAX)
-            
-            # 放置杯子
-            self.env.set_p_base_body(body_name=mug_name, p=np.array([x, y, z]))
-            self.env.set_R_base_body(body_name=mug_name, R=np.eye(3,3))
+            # 🔥 V4.1: 按固定顺序放置杯子，每个杯子在固定位置附近小范围随机
+            for mug_name in mug_names:
+                # 获取该杯子的固定位置
+                base_x, base_y, base_z = CUP_FIXED_POSITIONS[mug_name]
+                
+                # 在固定位置附近添加小范围随机扰动 (±2cm)
+                x = base_x + random.uniform(-CUP_POSITION_NOISE, CUP_POSITION_NOISE)
+                y = base_y + random.uniform(-CUP_POSITION_NOISE, CUP_POSITION_NOISE)
+                z = base_z
+                
+                # 确保杯子在桌面范围内
+                x = np.clip(x, TABLE_X_MIN, TABLE_X_MAX)
+                y = np.clip(y, TABLE_Y_MIN, TABLE_Y_MAX)
+                
+                # 放置杯子
+                self.env.set_p_base_body(body_name=mug_name, p=np.array([x, y, z]))
+                self.env.set_R_base_body(body_name=mug_name, R=np.eye(3,3))
 
     def set_instruction(self, given=None, task_type=None):
         """
@@ -369,15 +431,20 @@ class SimpleEnv4:
                     # 随机选择一个指令模板
                     instruction_template = random.choice(COLLAB_INSTRUCTIONS)
                     
-                    # 🔥 只从桌上存在的杯子中随机选择
+                    # 🔥 只从桌上存在的物体中随机选择
                     target_body_name = random.choice(list(available_mugs.keys()))
                     color = available_mugs[target_body_name]
                     
                     # 设置目标物体
                     self.obj_target = target_body_name
                     
-                    # 格式化指令文本
-                    self.instruction = instruction_template['text'].format(color=color)
+                    # 🔥 简单模式：如果是红色方块，使用 "red block" 而不是 "red mug"
+                    if self.pilot_run_mode and target_body_name == 'body_obj_red_block':
+                        # 使用 "block" 而不是 "mug"
+                        self.instruction = f"Place the {color} block on the tray."
+                    else:
+                        # 格式化指令文本
+                        self.instruction = instruction_template['text'].format(color=color)
                     # 保存颜色属性（用于数据记录等）
                     self.target_color = color
                 else:
@@ -392,13 +459,17 @@ class SimpleEnv4:
                     self.target_color = color
         else:
             self.instruction = given
-            # 解析 obj_target 和 target_color (支持四种颜色)
+            # 解析 obj_target 和 target_color (支持四种颜色和红色方块)
             if self.control_mode == 'arm' or self.task_type in ['arm', 'collab']:
                 # 🔥 解析指定的颜色，并检查是否在桌上
                 parsed_target = None
                 parsed_color = None
                 
-                if 'red' in self.instruction.lower() or 'mug_5' in self.instruction:
+                # 🔥 简单模式：优先检查红色方块
+                if self.pilot_run_mode and ('red' in self.instruction.lower() and 'block' in self.instruction.lower()):
+                    parsed_target = 'body_obj_red_block'
+                    parsed_color = 'red'
+                elif 'red' in self.instruction.lower() or 'mug_5' in self.instruction:
                     parsed_target = 'body_obj_mug_5'
                     parsed_color = 'red'
                 elif 'blue' in self.instruction.lower() or 'mug_6' in self.instruction:
@@ -417,18 +488,22 @@ class SimpleEnv4:
                         self.obj_target = parsed_target
                         self.target_color = parsed_color
                     else:
-                        # 🔥 指定的杯子不在桌上，警告并随机选择桌上的一个
-                        print(f"⚠️ Warning: Specified mug '{parsed_color}' is not on table. Selecting from available mugs.")
+                        # 🔥 指定的物体不在桌上，警告并随机选择桌上的一个
+                        print(f"⚠️ Warning: Specified object '{parsed_color}' is not on table. Selecting from available objects.")
                         fallback_target = random.choice(list(self.mug_colors_on_table.keys()))
                         self.obj_target = fallback_target
                         self.target_color = self.mug_colors_on_table[fallback_target]
                 else:
-                    # 没有桌上杯子信息，使用解析结果或默认值
+                    # 没有桌上物体信息，使用解析结果或默认值
                     if parsed_target:
                         self.obj_target = parsed_target
                         self.target_color = parsed_color
                     else:
-                        self.obj_target = 'body_obj_mug_5'
+                        # 简单模式默认使用红色方块，否则使用红色杯子
+                        if self.pilot_run_mode:
+                            self.obj_target = 'body_obj_red_block'
+                        else:
+                            self.obj_target = 'body_obj_mug_5'
                         self.target_color = 'red'
             elif self.control_mode == 'base':
                 self.current_nav_instruction = given
@@ -528,15 +603,16 @@ class SimpleEnv4:
 
     # ====== 🤖 Expert Policy Helper Functions (专家策略辅助函数) ======
     
-    def interpolate_move(self, start_pos, end_pos, steps, gripper_state):
+    def interpolate_move(self, start_pos, end_pos, steps, gripper_state, add_tremor=False):
         """
-        线性插值移动
+        线性插值移动（可选添加抖动）
         
         Parameters:
             start_pos: 起始位置 (3,)
             end_pos: 终止位置 (3,)
             steps: 插值步数
             gripper_state: 夹爪状态 (0.0=打开, 1.0=关闭)
+            add_tremor: 是否添加抖动
             
         Returns:
             waypoints: List of (pos, gripper_state) tuples
@@ -546,11 +622,20 @@ class SimpleEnv4:
             t = (i + 1) / steps  # t 从 1/steps 到 1.0
             pos = start_pos + t * (end_pos - start_pos)
             waypoints.append((pos.copy(), gripper_state))
+        
+        # 如果启用抖动，添加正交抖动
+        if add_tremor and EXPERT_TREMOR_ENABLED:
+            waypoints = self.add_orthogonal_tremor(
+                waypoints, start_pos, end_pos, 
+                EXPERT_TREMOR_AMPLITUDE, 
+                EXPERT_TREMOR_SMOOTHNESS
+            )
+        
         return waypoints
     
-    def bezier_move(self, p0, p1, p2, steps, gripper_state):
+    def bezier_move(self, p0, p1, p2, steps, gripper_state, add_tremor=False):
         """
-        二阶贝塞尔曲线插值移动
+        二阶贝塞尔曲线插值移动（可选添加抖动）
         B(t) = (1-t)^2 * P0 + 2*(1-t)*t * P1 + t^2 * P2
         
         Parameters:
@@ -559,6 +644,7 @@ class SimpleEnv4:
             p2: 终点 (3,)
             steps: 插值步数
             gripper_state: 夹爪状态
+            add_tremor: 是否添加抖动
             
         Returns:
             waypoints: List of (pos, gripper_state) tuples
@@ -569,6 +655,15 @@ class SimpleEnv4:
             # 二阶贝塞尔曲线公式
             pos = (1 - t)**2 * p0 + 2 * (1 - t) * t * p1 + t**2 * p2
             waypoints.append((pos.copy(), gripper_state))
+        
+        # 如果启用抖动，添加正交抖动（使用起点和终点构建正交平面）
+        if add_tremor and EXPERT_TREMOR_ENABLED:
+            waypoints = self.add_orthogonal_tremor(
+                waypoints, p0, p2, 
+                EXPERT_TREMOR_AMPLITUDE, 
+                EXPERT_TREMOR_SMOOTHNESS
+            )
+        
         return waypoints
     
     def create_gripper_action(self, pos, gripper_state, steps):
@@ -654,6 +749,94 @@ class SimpleEnv4:
             prev_point = point
         return length
     
+    def sample_point_in_circle(self, center_xy, radius):
+        """
+        🔥 在圆内均匀采样随机点（用于漏斗移动逻辑）
+        
+        Parameters:
+            center_xy: 圆心坐标 (2,) [x, y]
+            radius: 圆的半径（米）
+            
+        Returns:
+            point_xy: 圆内的随机点坐标 (2,) [x, y]
+        """
+        # 使用极坐标方法：在半径范围内均匀采样
+        # 为了确保在圆内均匀分布，使用 sqrt(r) 来采样半径
+        r = np.sqrt(np.random.uniform(0, 1)) * radius
+        theta = np.random.uniform(0, 2 * np.pi)
+        
+        point_xy = center_xy + np.array([r * np.cos(theta), r * np.sin(theta)])
+        return point_xy
+    
+    def add_orthogonal_tremor(self, trajectory, start_pos, end_pos, amplitude, smoothness=0.7):
+        """
+        🔥 在轨迹上添加正交于移动方向的抖动（模拟人类手部抖动）
+        
+        Parameters:
+            trajectory: 原始轨迹列表 [(pos, gripper_state), ...]
+            start_pos: 起始位置 (3,)
+            end_pos: 终止位置 (3,)
+            amplitude: 抖动幅度（米）
+            smoothness: 平滑度 (0-1)，越大抖动越平滑
+            
+        Returns:
+            trajectory_with_tremor: 添加抖动后的轨迹
+        """
+        if len(trajectory) == 0:
+            return trajectory
+        
+        # 计算移动方向向量
+        move_dir = end_pos - start_pos
+        move_len = np.linalg.norm(move_dir)
+        
+        # 如果移动距离太小，不添加抖动
+        if move_len < 1e-6:
+            return trajectory
+        
+        move_dir = move_dir / move_len  # 归一化
+        
+        # 构建正交平面：找到两个与移动方向正交的向量
+        # 方法1：使用一个固定方向（如[0,0,1]）与移动方向叉乘
+        if abs(move_dir[2]) < 0.9:  # 如果移动方向不接近垂直
+            ortho1 = np.cross(move_dir, np.array([0, 0, 1]))
+            ortho1 = ortho1 / np.linalg.norm(ortho1)
+        else:  # 如果移动方向接近垂直，使用另一个方向
+            ortho1 = np.cross(move_dir, np.array([1, 0, 0]))
+            ortho1 = ortho1 / np.linalg.norm(ortho1)
+        
+        # 第二个正交向量
+        ortho2 = np.cross(move_dir, ortho1)
+        ortho2 = ortho2 / np.linalg.norm(ortho2)
+        
+        # 生成抖动轨迹
+        trajectory_with_tremor = []
+        prev_tremor = np.zeros(2)  # 用于平滑（在正交平面的2D坐标）
+        
+        for i, (pos, gripper_state) in enumerate(trajectory):
+            # 生成随机抖动（在正交平面上）
+            random_tremor = np.random.uniform(-1, 1, size=2)
+            
+            # 平滑处理（随机游走 + 平滑）
+            tremor_2d = smoothness * prev_tremor + (1 - smoothness) * random_tremor
+            prev_tremor = tremor_2d.copy()
+            
+            # 归一化并缩放到目标幅度
+            tremor_magnitude = np.linalg.norm(tremor_2d)
+            if tremor_magnitude > 1e-6:
+                tremor_2d = tremor_2d / tremor_magnitude * amplitude * np.random.uniform(0.5, 1.5)
+            else:
+                tremor_2d = np.zeros(2)
+            
+            # 将2D抖动转换到3D空间
+            tremor_3d = tremor_2d[0] * ortho1 + tremor_2d[1] * ortho2
+            
+            # 叠加到原始位置
+            pos_with_tremor = pos + tremor_3d
+            
+            trajectory_with_tremor.append((pos_with_tremor.copy(), gripper_state))
+        
+        return trajectory_with_tremor
+    
     def auto_execute_task(self, record=False):
         """
         🤖 自动执行专家策略，生成高质量演示轨迹
@@ -663,7 +846,14 @@ class SimpleEnv4:
         
         执行阶段 (State Machine):
         1. 准备阶段: 计算带噪声的目标抓取点
-        2. 接近 (Approach): 移动到悬停点，垂直下降到抓取点
+        2. 接近 (Approach): 🔥 智能路径选择 + 漏斗移动逻辑
+           - 计算当前夹爪位置到悬停点和中间点的距离
+           - 如果距离中间点更近：直接移动到中间点，然后到抓取点
+           - 如果距离悬停点更近：先移动到悬停点，然后到中间点，最后到抓取点
+           - 悬停点：以 (X物体, Y物体+offset) 为中心、半径可调的圆内随机
+           - 中间点：高度0.38，XY坐标在抓取中心点为中心、半径可调的圆内随机
+           - 第二段下降：从中间点下降到抓取点
+           - 注意：两个圆的圆心都是 (X物体, Y物体+offset)，即抓取点的目标位置
         3. 抓取 (Grasp): 闭合夹爪，等待物理引擎结算
         4. 运输 (Transport): 提升后用贝塞尔曲线移动到托盘上方
         5. 放置 (Place): 垂直下降，松开夹爪
@@ -690,18 +880,37 @@ class SimpleEnv4:
         # 随机生成巡航高度
         z_travel = EXPERT_Z_TRAVEL_BASE + np.random.uniform(-EXPERT_Z_TRAVEL_NOISE, EXPERT_Z_TRAVEL_NOISE)
         
+        # 🔥 漏斗移动逻辑：两个圆的圆心都使用抓取中心点（X物体, Y物体+offset），即抓取点的目标位置（不含噪声）
+        # 🔥 简单模式（红色方块）：不需要 Y 轴偏移，从中心抓取，grasp_center_xy = (X方块, Y方块)
+        # 🔥 正常模式（杯子）：需要 Y 轴偏移到把手位置，grasp_center_xy = (X杯子, Y杯子+offset)
+        if self.pilot_run_mode and self.obj_target == 'body_obj_red_block':
+            y_grasp_offset = 0.0  # 方块从中心抓取
+        else:
+            y_grasp_offset = EXPERT_Y_GRASP_OFFSET  # 杯子需要偏移到把手位置
+        
+        grasp_center_xy = np.array([obj_pos[0], obj_pos[1] + y_grasp_offset])
+        
         # 抓取点（在物体真实坐标上叠加噪声和偏移）
         grasp_pos = np.array([
             obj_pos[0] + np.random.uniform(-EXPERT_XY_NOISE_SCALE, EXPERT_XY_NOISE_SCALE),
-            obj_pos[1] + EXPERT_Y_GRASP_OFFSET + np.random.uniform(-EXPERT_XY_NOISE_SCALE, EXPERT_XY_NOISE_SCALE),
+            obj_pos[1] + y_grasp_offset + np.random.uniform(-EXPERT_XY_NOISE_SCALE, EXPERT_XY_NOISE_SCALE),
             EXPERT_Z_GRASP_BASE + np.random.uniform(-EXPERT_Z_NOISE, EXPERT_Z_NOISE)
         ])
         
-        # 悬停点（物体上方，带微小误差）
+        # 🔥 漏斗移动逻辑：悬停点在物体上方，以抓取中心点 (grasp_center_xy) 为中心、半径可调的圆内随机
+        hover_xy = self.sample_point_in_circle(grasp_center_xy, radius=EXPERT_FUNNEL_HOVER_RADIUS)
         hover_pos = np.array([
-            grasp_pos[0] + np.random.uniform(-EXPERT_HOVER_NOISE, EXPERT_HOVER_NOISE),
-            grasp_pos[1] + np.random.uniform(-EXPERT_HOVER_NOISE, EXPERT_HOVER_NOISE),
+            hover_xy[0],
+            hover_xy[1],
             z_travel
+        ])
+        
+        # 🔥 漏斗移动逻辑：中间点（高度0.38），XY坐标在抓取中心点 (grasp_center_xy) 为中心、半径可调的圆内随机
+        mid_xy = self.sample_point_in_circle(grasp_center_xy, radius=EXPERT_FUNNEL_MID_RADIUS)
+        mid_pos = np.array([
+            mid_xy[0],
+            mid_xy[1],
+            0.38  # 高度固定为0.38m
         ])
         
         # 放置点（托盘上方，带噪声）
@@ -725,9 +934,24 @@ class SimpleEnv4:
         lift_pos = np.array([grasp_pos[0], grasp_pos[1], z_travel])
         retract_pos = np.array([place_pos[0], place_pos[1], EXPERT_RETRACT_HEIGHT])
         
-        # 动态步数计算
-        approach_steps = self.distance_based_steps(current_pos, hover_pos, EXPERT_SPEED_APPROACH)
-        descend_steps = self.distance_based_steps(hover_pos, grasp_pos, EXPERT_SPEED_DESCEND)
+        # 🔥 智能路径选择：根据当前夹爪位置到悬停点和中间点的距离，选择更近的路径
+        dist_to_hover = np.linalg.norm(current_pos - hover_pos)
+        dist_to_mid = np.linalg.norm(current_pos - mid_pos)
+        
+        # 根据距离选择路径
+        if dist_to_mid < dist_to_hover:
+            # 距离中间点更近：直接到中间点，然后到抓取点
+            use_hover = False
+            approach_steps = self.distance_based_steps(current_pos, mid_pos, EXPERT_SPEED_APPROACH)
+            descend_steps_1 = 0  # 不需要从悬停点到中间点
+            descend_steps_2 = self.distance_based_steps(mid_pos, grasp_pos, EXPERT_SPEED_DESCEND)
+        else:
+            # 距离悬停点更近：先到悬停点，然后到中间点，最后到抓取点
+            use_hover = True
+            approach_steps = self.distance_based_steps(current_pos, hover_pos, EXPERT_SPEED_APPROACH)
+            descend_steps_1 = self.distance_based_steps(hover_pos, mid_pos, EXPERT_SPEED_DESCEND)
+            descend_steps_2 = self.distance_based_steps(mid_pos, grasp_pos, EXPERT_SPEED_DESCEND)
+        
         grasp_wait_steps = self.rand_wait_steps(EXPERT_GRASP_WAIT_BASE, EXPERT_GRASP_WAIT_NOISE)
         lift_steps = self.distance_based_steps(grasp_pos, lift_pos, EXPERT_SPEED_LIFT)
         lower_steps = self.distance_based_steps(place_hover_pos, place_pos, EXPERT_SPEED_LOWER)
@@ -739,11 +963,27 @@ class SimpleEnv4:
         trajectory = []
         
         # ====== 2. 接近阶段 (Approach) ======
-        # 2.1 移动到物体上方悬停点（夹爪打开）
-        trajectory.extend(self.interpolate_move(current_pos, hover_pos, approach_steps, gripper_state=0.0))
+        # 🔥 智能路径选择：根据距离选择最优路径
+        if use_hover:
+            # 路径1：当前位置 -> 悬停点 -> 中间点 -> 抓取点
+            # 2.1 移动到物体上方悬停点（夹爪打开）
+            # 🔥 漏斗移动逻辑：悬停点在物体上方，以抓取中心点 (grasp_center_xy) 为中心、半径可调的圆内随机
+            # 🔥 添加抖动：模拟人类手部轻微抖动
+            trajectory.extend(self.interpolate_move(current_pos, hover_pos, approach_steps, gripper_state=0.0, add_tremor=True))
+            
+            # 🔥 漏斗移动逻辑：下降分为两段，实现XY坐标逐渐收敛
+            # 2.2 第一段：从悬停点下降到中间点（高度0.38），XY坐标从半径5cm收敛到半径1cm
+            # 🔥 添加抖动：精细操作时的轻微抖动
+            trajectory.extend(self.interpolate_move(hover_pos, mid_pos, descend_steps_1, gripper_state=0.0, add_tremor=True))
+        else:
+            # 路径2：当前位置 -> 中间点 -> 抓取点（跳过悬停点）
+            # 2.1 直接移动到中间点（夹爪打开）
+            # 🔥 添加抖动：模拟人类手部轻微抖动
+            trajectory.extend(self.interpolate_move(current_pos, mid_pos, approach_steps, gripper_state=0.0, add_tremor=True))
         
-        # 2.2 垂直下降到抓取点（平滑下降，夹爪打开）
-        trajectory.extend(self.interpolate_move(hover_pos, grasp_pos, descend_steps, gripper_state=0.0))
+        # 2.3 第二段：从中间点下降到抓取点（平滑下降，夹爪打开）
+        # 🔥 添加抖动：精细操作时的轻微抖动
+        trajectory.extend(self.interpolate_move(mid_pos, grasp_pos, descend_steps_2, gripper_state=0.0, add_tremor=True))
         
         # ====== 3. 抓取阶段 (Grasp) ======
         # 3.1 闭合夹爪并等待物理引擎结算
@@ -751,7 +991,8 @@ class SimpleEnv4:
         
         # ====== 4. 运输阶段 (Transport) ======
         # 4.1 垂直提升至巡航高度
-        trajectory.extend(self.interpolate_move(grasp_pos, lift_pos, lift_steps, gripper_state=1.0))
+        # 🔥 添加抖动：提升时的轻微抖动
+        trajectory.extend(self.interpolate_move(grasp_pos, lift_pos, lift_steps, gripper_state=1.0, add_tremor=True))
         
         # 4.2 贝塞尔曲线运输到托盘上方
         # 🔥 优化：基于机械臂基座避障的贝塞尔曲线生成
@@ -827,11 +1068,13 @@ class SimpleEnv4:
         transport_steps = int(bezier_length / actual_transport_speed)
         transport_steps = np.clip(transport_steps, EXPERT_MIN_STEPS, EXPERT_MAX_STEPS)
         
-        trajectory.extend(self.bezier_move(lift_pos, control_point, place_hover_pos, transport_steps, gripper_state=1.0))
+        # 🔥 添加抖动：运输时的轻微抖动
+        trajectory.extend(self.bezier_move(lift_pos, control_point, place_hover_pos, transport_steps, gripper_state=1.0, add_tremor=True))
         
         # ====== 5. 放置阶段 (Place) ======
         # 5.1 垂直下降到放置点
-        trajectory.extend(self.interpolate_move(place_hover_pos, place_pos, lower_steps, gripper_state=1.0))
+        # 🔥 添加抖动：精细放置时的轻微抖动
+        trajectory.extend(self.interpolate_move(place_hover_pos, place_pos, lower_steps, gripper_state=1.0, add_tremor=True))
         
         # 5.2 松开夹爪并等待物体落稳
         trajectory.extend(self.create_gripper_action(place_pos, gripper_state=0.0, steps=place_wait_steps))
@@ -844,22 +1087,35 @@ class SimpleEnv4:
         self.expert_trajectory = trajectory
         self.expert_trajectory_idx = 0
         
-        # 🔥 设置录制状态和Pending状态（缓冲期）
+        # 🔥 设置录制状态和Pending状态（缓冲期已禁用）
         self.is_recording = record
-        self.expert_pending = True
-        self.expert_countdown = EXPERT_START_DELAY
-        self.expert_executing = False  # 先不执行，等待缓冲期结束
+        self.expert_pending = False  # 🔥 直接开始执行，不等待缓冲期
+        self.expert_countdown = 0
+        self.expert_executing = True  # 🔥 立即开始执行
+        
+        # 根据模式确定物体类型名称（用于打印）
+        obj_type_name = "block" if (self.pilot_run_mode and self.obj_target == 'body_obj_red_block') else "mug"
+        obj_desc = f"{getattr(self, 'target_color', 'unknown')} {obj_type_name}"
+        center_desc = "[X方块, Y方块]" if (self.pilot_run_mode and self.obj_target == 'body_obj_red_block') else "[X杯子, Y杯子+offset]"
+        
+        # 打印路径选择信息
+        path_type = "hover->mid->grasp" if use_hover else "mid->grasp (direct)"
         
         print(f"🤖 Expert trajectory generated: {len(trajectory)} steps")
-        print(f"   Target object: {self.obj_target} ({getattr(self, 'target_color', 'unknown')} mug)")
+        print(f"   Target object: {self.obj_target} ({obj_desc})")
+        print(f"   🔥 Smart Path Selection: {path_type} (dist_to_hover={dist_to_hover:.3f}m, dist_to_mid={dist_to_mid:.3f}m)")
+        print(f"   🔥 Funnel Approach: hover (grasp center, r={EXPERT_FUNNEL_HOVER_RADIUS*100:.1f}cm) -> mid (grasp center, z=0.38, r={EXPERT_FUNNEL_MID_RADIUS*100:.1f}cm) -> grasp")
+        print(f"   Funnel center: ({grasp_center_xy[0]:.3f}, {grasp_center_xy[1]:.3f}) {center_desc}")
+        print(f"   Hover pos: ({hover_pos[0]:.3f}, {hover_pos[1]:.3f}, {hover_pos[2]:.3f})")
+        print(f"   Mid pos: ({mid_pos[0]:.3f}, {mid_pos[1]:.3f}, {mid_pos[2]:.3f})")
         print(f"   Grasp pos: ({grasp_pos[0]:.3f}, {grasp_pos[1]:.3f}, {grasp_pos[2]:.3f})")
         print(f"   Place pos: ({place_pos[0]:.3f}, {place_pos[1]:.3f}, {place_pos[2]:.3f})")
-        print(f"   🔥 Dynamic Steps: approach={approach_steps}, descend={descend_steps}, grasp_wait={grasp_wait_steps}")
+        print(f"   🔥 Dynamic Steps: approach={approach_steps}, descend1={descend_steps_1}, descend2={descend_steps_2}, grasp_wait={grasp_wait_steps}")
         print(f"                    lift={lift_steps}, transport={transport_steps}, lower={lower_steps}")
         print(f"                    place_wait={place_wait_steps}, retract={retract_steps}")
         print(f"   📏 Bezier arc length: {bezier_length:.3f}m")
         if record:
-            print(f"   🎥 Recording Mode: Buffer {EXPERT_START_DELAY} steps before motion start")
+            print(f"   🎥 Recording Mode: Immediate start (no buffer)")
         else:
             print(f"   🧪 Test Mode: No recording")
     
@@ -870,7 +1126,7 @@ class SimpleEnv4:
         Returns:
             action: (7,) array [dx, dy, dz, drx, dry, drz, gripper] or None if trajectory finished
         """
-        # 🔥 开头处理 Pending（缓冲期）
+        # 🔥 开头处理 Pending（缓冲期已禁用，直接跳过）
         if self.expert_pending:
             self.expert_countdown -= 1
             if self.expert_countdown <= 0:
@@ -887,11 +1143,16 @@ class SimpleEnv4:
         if self.expert_waiting_save:
             self.expert_post_countdown -= 1
             if self.expert_post_countdown <= 0:
-                # 等待期结束，自动停止录制（但不保存）
+                # 等待期结束
                 self.expert_waiting_save = False
                 self.is_recording = False
-                print(f"\n⏰ Post-execution wait finished. Recording PAUSED (not saved).")
-                print(f"   👉 Press [U] to SAVE, or [I] to DISCARD.")
+                # 🔥 如果设置了自动保存标志，则触发自动保存（由collect_data_v4.py检测并执行）
+                if self.expert_auto_save:
+                    print(f"\n⏰ Post-execution wait finished. Auto-saving...")
+                    # 保持expert_auto_save=True，让collect_data_v4.py检测并保存
+                else:
+                    print(f"\n⏰ Post-execution wait finished. Recording PAUSED (not saved).")
+                    print(f"   👉 Press [U] to SAVE, or [I] to DISCARD.")
                 return None
             else:
                 # 等待期中，继续录制但返回静止动作
@@ -947,12 +1208,13 @@ class SimpleEnv4:
             else:
                 print("⚠️ Expert policy already running or waiting for save. Press Z to reset.")
         
-        # 🎥 Y 键：录制模式（执行并开启录制）
+        # 🎥 Y 键：录制模式（执行并开启录制，自动保存）
         if self.env.is_key_pressed_once(key=glfw.KEY_Y) and mode == 'arm':
             if not self.expert_executing and not self.expert_pending and not self.expert_waiting_save:
-                print("🎥 [Y] Record Mode: Auto Execute Expert Policy + Start Recording")
+                print("🎥 [Y] Record Mode: Auto Execute Expert Policy + Start Recording + Auto Save")
                 print("   → Recording flag enabled, auto-stop after 3s post-wait...")
-                print("   → After completion: [U] to SAVE, [I] to DISCARD")
+                print("   → After completion: Auto-saving (no manual save needed)")
+                self.expert_auto_save = True  # 🔥 设置自动保存标志
                 self.auto_execute_task(record=True)
             else:
                 print("⚠️ Expert policy already running or waiting for save. Press Z to reset.")
@@ -1126,8 +1388,8 @@ class SimpleEnv4:
         
         # 确保图像已获取
         if self.control_mode == 'arm':
-            if not hasattr(self, 'rgb_ego'): self.grab_image()
-            if teleop and not hasattr(self, 'rgb_back'): self.grab_image()
+            if not hasattr(self, 'rgb_ego') or not hasattr(self, 'rgb_back'):
+                self.grab_image()
         else:
             if not hasattr(self, 'rgb_front'): self.grab_image()
 
@@ -1143,8 +1405,8 @@ class SimpleEnv4:
             rgb_egocentric_view = add_title_to_img(self.rgb_ego, text=self.ego_title, shape=(640,480))
             self.env.viewer_rgb_overlay(rgb_egocentric_view, loc='bottom right')
             
-            # 3. 左上角: 后视图 (仅 Teleop 时)
-            if teleop and hasattr(self, 'rgb_back'):
+            # 3. 左上角: 后视图 (自动模式和手动模式都显示)
+            if hasattr(self, 'rgb_back'):
                 rgb_back_view = add_title_to_img(self.rgb_back, text='Back View', shape=(640,480))
                 self.env.viewer_rgb_overlay(rgb_back_view, loc='top left')
 

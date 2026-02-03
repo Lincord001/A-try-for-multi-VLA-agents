@@ -15,8 +15,12 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 # ║          以下参数是您最可能需要修改的，已按使用频率排序                         ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
+# --- 🔥 Pilot Run Mode (简单训练模式开关) ---
+PILOT_RUN_MODE = True              # True: 强制只生成1个固定的红色杯子 (Red Mug)
+                                    # False: 使用原有的 1-4 个随机杯子逻辑
+
 # --- 🤖 全自动录制 [P键] ---
-AUTO_RECORD_TARGET_EPISODES = 1    # 🎯 目标录制条数（达到后自动停止）
+AUTO_RECORD_TARGET_EPISODES = 500    # 🎯 目标录制条数（达到后自动停止）
 AUTO_SHUTDOWN_ON_COMPLETE = True     # 🔌 完成后是否自动关闭仿真环境
 
 # --- 📁 数据集名称与路径 ---
@@ -250,7 +254,8 @@ def main():
     current_mode = INITIAL_MODE
     
     print(f"Initializing Environment in [{current_mode.upper()}] mode...")
-    PnPEnv = SimpleEnv4(XML_PATH, seed=SEED, state_type='joint_angle')
+    print(f"🔥 Pilot Run Mode: {PILOT_RUN_MODE} ({'Simple: Red mug only' if PILOT_RUN_MODE else 'Full: 1-4 random mugs'})")
+    PnPEnv = SimpleEnv4(XML_PATH, seed=SEED, state_type='joint_angle', pilot_run_mode=PILOT_RUN_MODE)
     PnPEnv.reset(mode=current_mode)
 
     # ---------------------------------------------------------
@@ -300,10 +305,9 @@ def main():
     print("-"*60)
     print(" 🤖 ARM Mode Only (机械臂模式专用):")
     print("  [T] : Test Mode: Auto Execute (测试模式，不录制)")
-    print("  [Y] : 🎥 Record Mode: Auto Execute + Recording")
-    print("        → 执行完成后等待3秒，自动暂停录制")
-    print("        → 暂停后按 [U] 保存, 或 [I] 丢弃")
-    print("  [U] : 🔥 SAVE Paused Recording (保存暂停的录制) [NEW!]")
+    print("  [Y] : 🎥 Record Mode: Auto Execute + Recording + Auto Save")
+    print("        → 执行完成后等待3秒，自动保存（无需手动操作）")
+    print("  [I] : Discard Recording (丢弃当前录制)")
     print("  [O] : 🏠 Smooth Return Home (平滑归位机械臂)")
     print("-"*60)
     print(" 🤖🔄 FULL-AUTO Recording (全自动录制):")
@@ -344,9 +348,16 @@ def main():
                     elif auto_state == AUTO_STATE_CHECK_CUPS:
                         auto_wait_counter -= 1
                         if auto_wait_counter <= 0:
-                            # 检查所有杯子的 z 坐标
+                            # 🔥 根据 PILOT_RUN_MODE 决定检查哪些杯子
+                            if PILOT_RUN_MODE:
+                                # 简单模式：只检查红色杯子
+                                cup_names = ['body_obj_mug_5']
+                            else:
+                                # 完整模式：检查所有4个杯子
+                                cup_names = ['body_obj_mug_5', 'body_obj_mug_6', 'body_obj_mug_7', 'body_obj_mug_8']
+                            
+                            # 检查杯子的 z 坐标
                             cups_ok = True
-                            cup_names = ['body_obj_mug_5', 'body_obj_mug_6', 'body_obj_mug_7', 'body_obj_mug_8']
                             for cup_name in cup_names:
                                 try:
                                     cup_z = PnPEnv.env.get_p_body(cup_name)[2]
@@ -469,18 +480,65 @@ def main():
                                     dataset.clear_episode_buffer()
                                 print(f"🔴 [REC START] [{current_mode.upper()}] Recording Episode {current_episode_id} (Auto-start from Expert Policy)...")
                     
-                    # 🔥 专家策略执行完毕+等待期结束后，自动停止录制（但不保存）
+                    # 🔥 专家策略执行完毕+等待期结束后，自动停止录制
                     # 此时 is_recording=True 但 PnPEnv.is_recording=False
                     if not PnPEnv.is_recording and not PnPEnv.expert_executing and not PnPEnv.expert_pending and not PnPEnv.expert_waiting_save and is_recording:
                         # 只在刚停止时打印一次提示
                         if not hasattr(PnPEnv, '_expert_done_printed') or not PnPEnv._expert_done_printed:
                             is_recording = False  # 🔥 停止本地录制（但数据仍在缓冲区，未保存）
-                            print(f"\n⏸️ [REC PAUSED] Recording stopped after post-wait period ({current_frames} frames buffered)")
-                            print(f"   👉 Press [U] to SAVE, or [I] to DISCARD.")
                             PnPEnv._expert_done_printed = True
-                            PnPEnv._waiting_for_save = True  # 🔥 新增：标记正在等待用户保存/丢弃
-                            PnPEnv._last_queue_display = -1  # 🔥 初始化队列显示计数器
-                            PnPEnv._queue_line_printed = False  # 🔥 初始化打印标志
+                            
+                            # 🔥 检查是否需要自动保存（Y键触发）
+                            if getattr(PnPEnv, 'expert_auto_save', False):
+                                # 自动保存模式：等待队列清空后自动保存
+                                print(f"\n⏸️ [REC PAUSED] Recording stopped after post-wait period ({current_frames} frames buffered)")
+                                print(f"   🔄 Auto-saving mode: Waiting for queue to clear...")
+                                PnPEnv._waiting_for_save = True  # 标记等待保存（用于队列显示）
+                                PnPEnv._last_queue_display = -1
+                                PnPEnv._queue_line_printed = False
+                            else:
+                                # 手动保存模式：提示用户按U保存或I丢弃
+                                print(f"\n⏸️ [REC PAUSED] Recording stopped after post-wait period ({current_frames} frames buffered)")
+                                print(f"   👉 Press [U] to SAVE, or [I] to DISCARD.")
+                                PnPEnv._waiting_for_save = True
+                                PnPEnv._last_queue_display = -1
+                                PnPEnv._queue_line_printed = False
+                    
+                    # 🔥 自动保存逻辑：检测到expert_auto_save且队列清空后自动保存
+                    if getattr(PnPEnv, 'expert_auto_save', False) and getattr(PnPEnv, '_waiting_for_save', False):
+                        # 检查是否正在保存中，避免重复触发
+                        if not worker.saving_in_progress:
+                            # 检查队列是否清空
+                            if worker.qsize() == 0:
+                                # 等待队列完全清空（最终确认）
+                                worker.wait_queue_empty()
+                                
+                                # 检查是否有数据可保存
+                                if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None and len(dataset.episode_buffer) > 0:
+                                    try:
+                                        # 设置保存标志（防止重复触发）
+                                        worker.saving_in_progress = True
+                                        print(f"\n💾 [AUTO-SAVE] Saving Episode {current_episode_id}...")
+                                        
+                                        dataset.save_episode()
+                                        print(f"✅ [AUTO-SAVED] [{current_mode.upper()}] Episode {current_episode_id} saved ({current_frames} frames).")
+                                        episode_ids[current_mode] += 1
+                                        
+                                        # 重置所有相关标志
+                                        PnPEnv.expert_auto_save = False
+                                        PnPEnv._waiting_for_save = False
+                                        PnPEnv._expert_done_printed = False
+                                        worker.saving_in_progress = False
+                                    except Exception as e:
+                                        print(f"   ❌ Auto-save error: {e}")
+                                        worker.saving_in_progress = False
+                                        # 保存失败时不清除标志，让用户知道需要手动处理
+                                else:
+                                    # 没有数据可保存，直接重置标志
+                                    print(f"⚠️ [AUTO-SAVE] No data to save. Discarding.")
+                                    PnPEnv.expert_auto_save = False
+                                    PnPEnv._waiting_for_save = False
+                                    PnPEnv._expert_done_printed = False
                     
                     # 🔥 独立的队列状态显示逻辑（在等待保存/丢弃期间持续更新）
                     if getattr(PnPEnv, '_waiting_for_save', False):
@@ -557,63 +615,8 @@ def main():
                                 # 🔥 重置保存标志
                                 worker.saving_in_progress = False
 
-                # 🔥 [U] 保存已暂停的录制 (Arm模式专用，用于专家策略自动录制后的手动确认保存) (全自动模式下禁用)
-                if PnPEnv.env.is_key_pressed_once(glfw.KEY_U):
-                    if auto_state != AUTO_STATE_IDLE:
-                        print(f"\n⚠️ [U] Disabled: Full-Auto Mode is active. Press [P] to stop first.")
-                    elif current_mode == 'arm':
-                        # 🔥 检查：如果录制还在进行中，不允许保存
-                        if is_recording:
-                            print(f"\n⚠️ [U] Invalid operation: Cannot save while recording is still in progress.")
-                            print(f"   Reason: Recording flag is active (is_recording=True). Please wait for recording to finish.")
-                            if PnPEnv.expert_executing or PnPEnv.expert_pending or PnPEnv.expert_waiting_save:
-                                print(f"   Status: Expert policy is {'executing' if PnPEnv.expert_executing else 'pending' if PnPEnv.expert_pending else 'in post-wait period'}.")
-                        # 🔥 检查：如果队列中还有待处理的帧，不允许保存
-                        elif worker.qsize() > 0:
-                            queue_size = worker.qsize()
-                            print(f"\n⚠️ [U] Invalid operation: Cannot save while frames are still being processed.")
-                            print(f"   Reason: Queue still has {queue_size} frame(s) waiting to be processed in background.")
-                            print(f"   Please wait for queue to clear (watch the queue counter above).")
-                        else:
-                            # 检查是否有待保存的数据
-                            if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None and len(dataset.episode_buffer) > 0:
-                                # 🔥 检查是否已有保存操作在进行
-                                if worker.saving_in_progress:
-                                    print(f"\n⚠️ [U] Invalid operation: Save operation already in progress.")
-                                    print(f"   Reason: Another save operation is currently running. Please wait for it to complete.")
-                                else:
-                                    # 🔥 设置保存标志（防止竞态条件）
-                                    worker.saving_in_progress = True
-                                    
-                                    pending_frames = worker.qsize()
-                                    peak = worker.peak_qsize()
-                                    print(f"\n⏳ [U] Saving paused recording Episode {current_episode_id}...")
-                                    print(f"   📊 Buffered: {current_frames} frames | Queue backlog: {pending_frames} | Peak: {peak}")
-                                    
-                                    try:
-                                        # 🔥 带进度的等待（显示队列状态）
-                                        while worker.qsize() > 0:
-                                            remaining = worker.qsize()
-                                            progress = (pending_frames - remaining) / max(pending_frames, 1) * 100
-                                            print(f"   ⏳ Processing: {pending_frames - remaining}/{pending_frames} ({progress:.0f}%) - {remaining} frames remaining in queue...", end='\r')
-                                            time.sleep(0.5)
-                                        worker.wait_queue_empty()  # 最终确认
-                                        print(f"\n   ✅ Queue cleared!                                          ")
-                                        
-                                        dataset.save_episode()
-                                        print(f"✅ [SAVED] [{current_mode.upper()}] Episode {current_episode_id} saved ({current_frames} frames).")
-                                        episode_ids[current_mode] += 1
-                                        PnPEnv._expert_done_printed = False  # 重置提示标志
-                                        PnPEnv._waiting_for_save = False  # 🔥 重置等待标志
-                                    finally:
-                                        # 🔥 重置保存标志
-                                        worker.saving_in_progress = False
-                            else:
-                                print(f"⚠️ [U] Invalid operation: No buffered data to save.")
-                                print(f"   Reason: Episode buffer is empty. No frames have been recorded yet.")
-                    else:
-                        print(f"⚠️ [U] Invalid operation: Save function only available in ARM mode.")
-                        print(f"   Reason: Current mode is {current_mode.upper()}. Use [K] key for BASE mode.")
+                # 🔥 [U] 键已移除：Y键现在自动保存，不再需要手动保存
+                # （保留此注释以便将来需要时恢复）
 
                 # 🔥 [I] 丢弃录制 (两种模式通用) (全自动模式下禁用)
                 if PnPEnv.env.is_key_pressed_once(glfw.KEY_I):
@@ -635,6 +638,7 @@ def main():
                                     PnPEnv._expert_done_printed = False  # 重置提示标志
                                     PnPEnv.expert_waiting_save = False   # 🔥 重置等待状态
                                     PnPEnv._waiting_for_save = False     # 🔥 重置队列显示等待标志
+                                    PnPEnv.expert_auto_save = False      # 🔥 重置自动保存标志
                                 # 🔥 先清空队列（防止新数据继续进入）
                                 if worker.clear_queue():
                                     # 🔥 等待正在处理的帧完成并写入缓冲区（确保所有数据都被捕获）
@@ -661,6 +665,7 @@ def main():
                         PnPEnv.expert_waiting_save = False
                         PnPEnv._expert_done_printed = False
                         PnPEnv._waiting_for_save = False
+                        PnPEnv.expert_auto_save = False  # 🔥 重置自动保存标志
                         
                         # 清空队列和缓冲区
                         worker.clear_queue()
@@ -800,6 +805,7 @@ def main():
                         # 🔥 也需要重置等待状态（即使不在录制中，可能是暂停状态）
                         if current_mode == 'arm':
                             PnPEnv._waiting_for_save = False
+                            PnPEnv.expert_auto_save = False  # 🔥 重置自动保存标志
                         PnPEnv.reset(mode=current_mode)
                         # 🔥 先清空队列（防止新数据继续进入）
                         if worker.clear_queue():

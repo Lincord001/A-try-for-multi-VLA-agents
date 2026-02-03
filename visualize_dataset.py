@@ -27,7 +27,7 @@ DATASET_CONFIG = {
 XML_PATH = './asset/example_scene_y4.xml'
 FPS = 20  # 录制时的帧率
 LOOP_EPISODE = 0  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
-START_EPISODE = 0  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
+START_EPISODE = 370  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
 # ===========================================
 
 

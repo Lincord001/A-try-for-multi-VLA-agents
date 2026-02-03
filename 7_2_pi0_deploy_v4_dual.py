@@ -107,8 +107,15 @@ GRIPPER_CLOSE_THRESH = 0.4      # 低于此值才关闭夹爪
 # ==========================================
 # 🔧 模型加载选择
 # ==========================================
-LOAD_ARM_MODEL = False   # 是否加载 ARM 模型
-LOAD_BASE_MODEL = True  # 是否加载 BASE 模型
+LOAD_ARM_MODEL = True   # 是否加载 ARM 模型
+LOAD_BASE_MODEL = False  # 是否加载 BASE 模型
+
+# ==========================================
+# 🔧 Arm 模式难度选择
+# ==========================================
+# True:  简单模式（Pilot Run Mode）- 只生成红色杯子，位置大范围随机
+# False: 困难模式（Normal Mode）- 4个杯子固定位置，小范围随机
+ARM_PILOT_RUN_MODE = True
 
 # 导入 LeRobot 和 MuJoCo 环境
 try:
@@ -505,9 +512,9 @@ class AsyncArmInferenceRunner:
             try:
                 # 图像预处理: resize
                 t0 = time.perf_counter()
-                agent_img = Image.fromarray(raw_images['agent']).resize((self.image_size, self.image_size))
-                wrist_img = Image.fromarray(raw_images['wrist']).resize((self.image_size, self.image_size))
-                back_img = Image.fromarray(raw_images['back']).resize((self.image_size, self.image_size))
+                agent_img = Image.fromarray(raw_images['agent']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
+                wrist_img = Image.fromarray(raw_images['wrist']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
+                back_img = Image.fromarray(raw_images['back']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
                 t1 = time.perf_counter()
                 if self.perf_monitor:
                     self.perf_monitor.record_inference('img_resize', t1 - t0)
@@ -756,9 +763,9 @@ class AsyncBaseInferenceRunner:
             try:
                 # 图像预处理: resize
                 t0 = time.perf_counter()
-                front_img = Image.fromarray(raw_images['front']).resize((self.image_size, self.image_size))
-                left_img = Image.fromarray(raw_images['left']).resize((self.image_size, self.image_size))
-                right_img = Image.fromarray(raw_images['right']).resize((self.image_size, self.image_size))
+                front_img = Image.fromarray(raw_images['front']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
+                left_img = Image.fromarray(raw_images['left']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
+                right_img = Image.fromarray(raw_images['right']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
                 t1 = time.perf_counter()
                 if self.perf_monitor:
                     self.perf_monitor.record_inference('img_resize', t1 - t0)
@@ -962,6 +969,7 @@ def main():
     print(f"   LOAD_ARM_MODEL: {LOAD_ARM_MODEL}")
     print(f"   LOAD_BASE_MODEL: {LOAD_BASE_MODEL}")
     print(f"   CHUNK_THRESHOLD: {CHUNK_THRESHOLD}")
+    print(f"   ARM_PILOT_RUN_MODE: {ARM_PILOT_RUN_MODE} ({'简单模式' if ARM_PILOT_RUN_MODE else '困难模式'})")
 
     # 1. 根据配置加载模型
     arm_policy = None
@@ -989,7 +997,7 @@ def main():
     xml_path = './asset/example_scene_y4.xml'
     # V4 环境使用 eef_pose 模式，因为 teleop_robot 返回的是 eef_pose 增量
     # PI0 自动控制时输出绝对关节角度，需要在自动控制逻辑中特殊处理
-    PnPEnv = SimpleEnv4(xml_path, action_type='eef_pose', state_type='joint_angle')
+    PnPEnv = SimpleEnv4(xml_path, action_type='eef_pose', state_type='joint_angle', pilot_run_mode=ARM_PILOT_RUN_MODE)
     
     # 初始模式设为 arm
     control_mode = 'arm'
@@ -1185,9 +1193,9 @@ def main():
                             t0 = time.perf_counter()
                             
                             # 准备图像输入
-                            agent_img = Image.fromarray(images_dict['agent']).resize((ARM_CONFIG['image_size'], ARM_CONFIG['image_size']))
-                            wrist_img = Image.fromarray(images_dict['wrist']).resize((ARM_CONFIG['image_size'], ARM_CONFIG['image_size']))
-                            back_img = Image.fromarray(images_dict['back']).resize((ARM_CONFIG['image_size'], ARM_CONFIG['image_size']))
+                            agent_img = Image.fromarray(images_dict['agent']).resize((ARM_CONFIG['image_size'], ARM_CONFIG['image_size']), resample=Image.BILINEAR)
+                            wrist_img = Image.fromarray(images_dict['wrist']).resize((ARM_CONFIG['image_size'], ARM_CONFIG['image_size']), resample=Image.BILINEAR)
+                            back_img = Image.fromarray(images_dict['back']).resize((ARM_CONFIG['image_size'], ARM_CONFIG['image_size']), resample=Image.BILINEAR)
                             
                             agent_tensor = IMG_TRANSFORM(agent_img).unsqueeze(0).to(device)
                             wrist_tensor = IMG_TRANSFORM(wrist_img).unsqueeze(0).to(device)
@@ -1260,19 +1268,7 @@ def main():
                         t_loop_end = time.perf_counter()
                         perf_monitor.record_main('total_loop', t_loop_end - t_loop_start)
                         
-                        # 6. 检查成功
-                        if PnPEnv.check_success():
-                            print("\n🎉 ARM Task Success!")
-                            if not ARM_SYNC_INFERENCE and arm_runner:
-                                arm_runner.stop()
-                                arm_runner.reset_state()
-                            arm_smoother.reset()  # 🔧 重置平滑器
-                            auto_mode_arm = False
-                            PnPEnv.reset(mode='arm')
-                            step = 0
-                            continue
-                        
-                        # 7. 打印统计
+                        # 6. 打印统计
                         if step % 50 == 0:
                             perf_monitor.print_stats(step, mode='arm')
                         elif step % 10 == 0:
