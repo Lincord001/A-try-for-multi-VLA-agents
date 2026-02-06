@@ -1390,3 +1390,459 @@ WARNING: Insufficient arena memory for the number of constraints generated. Incr
 Tue Feb  3 13:38:18 2026
 WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
 
+Tue Feb  3 13:44:57 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 13:44:57 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 13:54:08 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 13:54:08 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 13:55:35 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 13:55:35 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:18:43 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:18:43 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:20:45 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:20:45 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:23:11 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:23:11 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:23:49 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:23:49 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:24:46 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:24:46 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:29:54 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:29:54 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:41:34 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:41:34 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:55:38 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 14:55:38 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:22:37 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:22:37 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:26:32 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:26:32 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:33:25 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:33:25 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:37:56 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:37:56 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:38:58 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:38:58 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:46:50 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:46:50 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:54:20 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:54:20 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:55:58 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 15:55:58 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 16:02:52 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 16:02:52 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 16:08:37 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 16:08:37 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 16:11:30 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 16:11:30 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 16:57:17 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 16:57:17 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:01:01 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:01:01 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:03:59 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:03:59 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:11:50 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:11:50 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:26:56 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:26:56 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:36:18 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:36:18 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:53:43 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:53:43 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:54:12 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:54:12 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:55:00 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 17:55:00 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 18:09:35 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 18:09:35 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 18:14:07 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 18:14:07 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 18:22:31 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 18:22:31 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 18:32:55 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 18:32:55 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 18:35:15 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 18:35:15 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 21:34:45 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 21:34:45 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 21:38:10 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Tue Feb  3 21:38:10 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 10:45:53 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 10:45:53 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 10:48:19 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 10:48:19 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 10:58:58 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 10:58:58 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 11:13:21 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 11:13:21 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 12:08:05 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 12:08:05 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 12:09:54 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 12:09:54 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:20:38 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:20:38 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:29:57 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:29:57 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:30:27 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:30:27 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:33:46 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:33:46 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:35:55 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:35:56 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:40:09 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:40:09 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:42:36 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 18:42:36 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 19:18:01 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 19:18:01 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 19:26:47 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 19:26:47 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 19:27:56 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 19:27:56 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 19:45:59 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 19:45:59 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 19:48:08 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 19:48:08 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 21:03:13 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Wed Feb  4 21:03:13 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Thu Feb  5 09:09:20 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Thu Feb  5 09:09:20 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Thu Feb  5 09:35:22 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Thu Feb  5 09:35:22 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Thu Feb  5 09:48:11 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Thu Feb  5 09:48:11 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Thu Feb  5 10:29:22 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Thu Feb  5 10:29:22 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Thu Feb  5 10:45:15 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Thu Feb  5 10:45:15 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 10:55:42 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 10:55:42 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:01:54 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:01:54 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:16:30 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:16:30 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:22:35 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:22:35 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:27:17 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:27:17 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:29:31 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:29:31 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:32:06 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:32:06 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:34:19 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:34:19 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:42:09 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:42:09 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:43:42 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:43:42 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:45:52 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:45:52 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:47:46 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:47:46 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:50:22 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:50:22 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:51:42 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+
+Fri Feb  6 11:51:42 2026
+WARNING: Insufficient arena memory for the number of constraints generated. Increase arena memory allocation above 500M bytes. Time = 0.0000.
+

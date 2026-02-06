@@ -45,8 +45,8 @@ class DatasetViewer:
                     self.image_keys.append(cam_name)
             self.image_keys.sort()  # 排序以保持一致性
         else:
-            # 如果数据集为空，使用默认值
-            self.image_keys = ['agent', 'wrist', 'back']
+            # 如果数据集为空，使用默认值（匹配 collect_data_v4.py 的 arm 模式）
+            self.image_keys = ['agent', 'wrist']
         
         print(f"✅ 数据集加载成功: {self.num_episodes} 个 Episodes, {len(self.dataset)} 帧")
         print(f"📷 检测到相机: {self.image_keys}")

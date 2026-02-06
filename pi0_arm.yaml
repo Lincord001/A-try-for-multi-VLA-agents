@@ -12,7 +12,7 @@ policy:
 
 save_checkpoint: true
 output_dir: ./ckpt/pi0_arm_v4    # <--- 修改输出目录，避免覆盖
-batch_size: 12                # 根据显存调整
+batch_size: 8                # 根据显存调整
 job_name: pi0_arm
 resume: false
 seed: 42

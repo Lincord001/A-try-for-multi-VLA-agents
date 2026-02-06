@@ -12,7 +12,7 @@ V4 环境部署脚本 - 支持 Arm 和 Base 双模式异步推理
 Arm 模式：
 - 数据集: demo_data_arm_v4
 - 权重: ckpt/pi0_arm/pretrained_model_arm_v4
-- 输入: 3个相机(agent/wrist/back, 224x224) + 6维关节角度
+- 输入: 2个相机(agent/wrist, 224x224) + 6维关节角度
 - 输出: 7维 (6关节角度 + 1夹爪状态) - 绝对量
 
 Base 模式：
@@ -48,15 +48,15 @@ import glfw
 
 # Arm 模型配置 (V4.1)
 ARM_CONFIG = {
-    'model_path': './ckpt/pi0_arm/pretrained_model_arm_v4',
+    'model_path': './ckpt/pi0_arm/pretrained_model_arm_v5',
     'dataset_repo_id': 'omy_arm_data_v4',
     'dataset_root': './demo_data_arm_v4',
     'chunk_size': 5,           # 🔥 V4.1: 从 20 改为 5
     'n_action_steps': 5,       # 🔥 V4.1: 从 20 改为 5
     'image_size': 224,  # arm 模型使用 224x224
-    'state_dim': 6,
+    'state_dim': 7,            # 🔥 修复：应该是7维 [q1, q2, q3, q4, q5, q6, gripper]，匹配数据采集脚本
     'action_dim': 7,
-    'camera_keys': ['agent', 'wrist', 'back'],
+    'camera_keys': ['agent', 'wrist'],
 }
 
 # Base 模型配置 (V3)
@@ -115,7 +115,13 @@ LOAD_BASE_MODEL = False  # 是否加载 BASE 模型
 # ==========================================
 # True:  简单模式（Pilot Run Mode）- 只生成红色杯子，位置大范围随机
 # False: 困难模式（Normal Mode）- 4个杯子固定位置，小范围随机
-ARM_PILOT_RUN_MODE = True
+ARM_PILOT_RUN_MODE = True  # 🔥 已废弃，保留用于兼容性
+
+# ==========================================
+# 🔧 随机初始化配置（匹配 y_env4.py 和 collect_data_v4.py）
+# ==========================================
+RANDOM_INIT_ENABLED = 0            # 0: 关闭, 1: 旧版(扇形区域), 2: 新版(圆形交集，仅简单模式)
+RANDOM_INIT_GRIPPER_OPEN = True    # True: 初始化时夹爪张开, False: 初始化时夹爪闭合
 
 # 导入 LeRobot 和 MuJoCo 环境
 try:
@@ -337,7 +343,7 @@ class ActionSmoother:
 class AsyncArmInferenceRunner:
     """
     Arm 模式的异步推理运行器
-    - 输入: 3个相机(agent/wrist/back) + 6维关节角度
+    - 输入: 2个相机(agent/wrist) + 6维关节角度
     - 输出: 7维动作 (6关节角度 + 1夹爪状态)
     
     🔥 关键：ARM 模式使用顺序执行而非延迟补偿
@@ -355,7 +361,7 @@ class AsyncArmInferenceRunner:
         self.lock = threading.Lock()
         
         # 共享数据：输入
-        self.latest_raw_images = None  # {'agent': np.array, 'wrist': np.array, 'back': np.array}
+        self.latest_raw_images = None  # {'agent': np.array, 'wrist': np.array}
         self.latest_state = None       # (6,) 关节角度
         self.latest_task = None        # 任务字符串列表
         self.latest_obs_timestamp = 0
@@ -514,7 +520,6 @@ class AsyncArmInferenceRunner:
                 t0 = time.perf_counter()
                 agent_img = Image.fromarray(raw_images['agent']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
                 wrist_img = Image.fromarray(raw_images['wrist']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
-                back_img = Image.fromarray(raw_images['back']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
                 t1 = time.perf_counter()
                 if self.perf_monitor:
                     self.perf_monitor.record_inference('img_resize', t1 - t0)
@@ -523,7 +528,6 @@ class AsyncArmInferenceRunner:
                 t0 = time.perf_counter()
                 agent_t = self.img_transform(agent_img).unsqueeze(0)
                 wrist_t = self.img_transform(wrist_img).unsqueeze(0)
-                back_t = self.img_transform(back_img).unsqueeze(0)
                 t1 = time.perf_counter()
                 if self.perf_monitor:
                     self.perf_monitor.record_inference('img_totensor', t1 - t0)
@@ -532,7 +536,6 @@ class AsyncArmInferenceRunner:
                 t0 = time.perf_counter()
                 agent_tensor = agent_t.to(self.device)
                 wrist_tensor = wrist_t.to(self.device)
-                back_tensor = back_t.to(self.device)
                 state_tensor = torch.tensor(np.array(state, dtype=np.float32)).unsqueeze(0).to(self.device)
                 t1 = time.perf_counter()
                 if self.perf_monitor:
@@ -543,7 +546,6 @@ class AsyncArmInferenceRunner:
                     'observation.state': state_tensor,
                     'observation.images.agent': agent_tensor,
                     'observation.images.wrist': wrist_tensor,
-                    'observation.images.back': back_tensor,
                     'task': task
                 }
                 
@@ -969,7 +971,9 @@ def main():
     print(f"   LOAD_ARM_MODEL: {LOAD_ARM_MODEL}")
     print(f"   LOAD_BASE_MODEL: {LOAD_BASE_MODEL}")
     print(f"   CHUNK_THRESHOLD: {CHUNK_THRESHOLD}")
-    print(f"   ARM_PILOT_RUN_MODE: {ARM_PILOT_RUN_MODE} ({'简单模式' if ARM_PILOT_RUN_MODE else '困难模式'})")
+    print(f"   ARM_PILOT_RUN_MODE: {ARM_PILOT_RUN_MODE} ({'简单模式' if ARM_PILOT_RUN_MODE else '困难模式'}) [已废弃]")
+    print(f"   RANDOM_INIT_ENABLED: {RANDOM_INIT_ENABLED} ({'关闭' if RANDOM_INIT_ENABLED == 0 else 'V1 (扇形区域)' if RANDOM_INIT_ENABLED == 1 else 'V2 (圆形交集)'})")
+    print(f"   RANDOM_INIT_GRIPPER_OPEN: {RANDOM_INIT_GRIPPER_OPEN}")
 
     # 1. 根据配置加载模型
     arm_policy = None
@@ -995,9 +999,16 @@ def main():
     print("="*60)
     
     xml_path = './asset/example_scene_y4.xml'
-    # V4 环境使用 eef_pose 模式，因为 teleop_robot 返回的是 eef_pose 增量
-    # PI0 自动控制时输出绝对关节角度，需要在自动控制逻辑中特殊处理
-    PnPEnv = SimpleEnv4(xml_path, action_type='eef_pose', state_type='joint_angle', pilot_run_mode=ARM_PILOT_RUN_MODE)
+    # 🔥 使用 joint_angle 模式，直接支持模型输出的绝对关节角度
+    # 手动控制时，teleop_robot 返回 eef_pose 增量，需要临时切换 action_type
+    # 🔥 修改：使用 random_init_enabled 和 random_init_gripper_open 参数（匹配 y_env4.py）
+    PnPEnv = SimpleEnv4(
+        xml_path, 
+        action_type='joint_angle',  # 🔥 改为 joint_angle，直接支持绝对关节角度
+        state_type='joint_angle',
+        random_init_enabled=RANDOM_INIT_ENABLED,
+        random_init_gripper_open=RANDOM_INIT_GRIPPER_OPEN
+    )
     
     # 初始模式设为 arm
     control_mode = 'arm'
@@ -1181,8 +1192,9 @@ def main():
                         
                         # 1. 收集观测数据
                         t0 = time.perf_counter()
-                        state = PnPEnv.get_joint_state()[:6]
-                        images_dict = PnPEnv.grab_image()  # {'agent', 'wrist', 'back'}
+                        # 🔥 修复：使用完整的7维state [q1, q2, q3, q4, q5, q6, gripper]，匹配数据采集脚本
+                        state = PnPEnv.get_joint_state()  # (7,) 包含夹爪状态
+                        images_dict = PnPEnv.grab_image()  # {'agent', 'wrist'}
                         t1 = time.perf_counter()
                         perf_monitor.record_main('grab_image', t1 - t0)
                         
@@ -1195,18 +1207,15 @@ def main():
                             # 准备图像输入
                             agent_img = Image.fromarray(images_dict['agent']).resize((ARM_CONFIG['image_size'], ARM_CONFIG['image_size']), resample=Image.BILINEAR)
                             wrist_img = Image.fromarray(images_dict['wrist']).resize((ARM_CONFIG['image_size'], ARM_CONFIG['image_size']), resample=Image.BILINEAR)
-                            back_img = Image.fromarray(images_dict['back']).resize((ARM_CONFIG['image_size'], ARM_CONFIG['image_size']), resample=Image.BILINEAR)
                             
                             agent_tensor = IMG_TRANSFORM(agent_img).unsqueeze(0).to(device)
                             wrist_tensor = IMG_TRANSFORM(wrist_img).unsqueeze(0).to(device)
-                            back_tensor = IMG_TRANSFORM(back_img).unsqueeze(0).to(device)
                             
                             # 准备模型输入
                             data = {
                                 'observation.state': torch.tensor([state], dtype=torch.float32).to(device),
                                 'observation.images.agent': agent_tensor,
                                 'observation.images.wrist': wrist_tensor,
-                                'observation.images.back': back_tensor,
                                 'task': [PnPEnv.instruction],
                             }
                             
@@ -1247,14 +1256,12 @@ def main():
                                 action_step, chunk_id=chunk_id
                             )
                             
-                            joint_angles = smoothed_action[:6]
-                            gripper_cmd = smoothed_action[6]
-                            
-                            gripper_array = np.array([gripper_cmd] * 4)
-                            gripper_array[[1, 3]] *= 0.8
-                            PnPEnv.current_arm_q = np.concatenate([joint_angles, gripper_array])
+                            # 🔥 直接使用 step 方法，传入绝对关节角度（7维：[6关节角度 + 1夹爪]）
+                            # smoothed_action 已经是 (7,) 格式，直接传入即可
+                            PnPEnv.step(smoothed_action, mode='arm')
                             PnPEnv.gripper_state = gripper_state  # 🔧 使用迟滞控制后的夹爪状态
                         
+                        # 🔥 更新 p0 和 R0（用于保持 eef_pose 状态同步，虽然当前使用 joint_angle 模式）
                         PnPEnv.p0, PnPEnv.R0 = PnPEnv.env.get_pR_body(body_name='tcp_link')
                         t1 = time.perf_counter()
                         perf_monitor.record_main('step_env', t1 - t0)
@@ -1287,12 +1294,18 @@ def main():
                         
                     else:
                         # Arm 手动控制模式
+                        # 🔥 teleop_robot 返回的是 eef_pose 增量，需要临时切换 action_type
+                        original_action_type = PnPEnv.action_type
+                        PnPEnv.action_type = 'eef_pose'  # 临时切换为 eef_pose 模式
+                        
                         action, reset = PnPEnv.teleop_robot(mode='arm')
                         if reset:
                             PnPEnv.reset(mode='arm')
                             step = 0
                         else:
                             PnPEnv.step(action, mode='arm')
+                        
+                        PnPEnv.action_type = original_action_type  # 恢复为 joint_angle 模式
                         PnPEnv.render(teleop=True, idx=step)
                         step += 1
                 

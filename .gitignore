@@ -49,3 +49,24 @@ __pycache__/
 # 系统临时文件
 .DS_Store
 asset/
+
+# ========================
+# 4. 忽略所有压缩包文件
+# ========================
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tbz2
+*.tar.xz
+*.txz
+*.rar
+*.7z
+*.gz
+*.bz2
+*.xz
+*.lz
+*.lzma
+*.z
+*.Z

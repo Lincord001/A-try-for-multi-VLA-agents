@@ -20,14 +20,14 @@ DATASET_CONFIG = {
     'arm': {
         'repo_name': 'demo_data_arm_v4',
         'root': './demo_data_arm_v4',
-        'image_keys': ['agent', 'wrist', 'back'],  # 机械臂模式的相机
+        'image_keys': ['agent', 'wrist'],  # 🔥 机械臂模式的相机（匹配 collect_data_v4.py）
     }
 }
 
 XML_PATH = './asset/example_scene_y4.xml'
 FPS = 20  # 录制时的帧率
 LOOP_EPISODE = 0  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
-START_EPISODE = 370  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
+START_EPISODE = 299  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
 # ===========================================
 
 
@@ -43,7 +43,8 @@ class VisualizerEnv(SimpleEnv4):
         
         if self.vis_mode == 'arm':
             # === Arm 模式布局 (与 y_env4.py 一致) ===
-            # rec_img_0 = agent, rec_img_1 = wrist, rec_img_2 = back
+            # 🔥 修改：arm模式只有2个相机（agent, wrist），匹配 collect_data_v4.py
+            # rec_img_0 = agent, rec_img_1 = wrist
             
             # 1. 右上角: Agent 全局视角 (主视角)
             if hasattr(self, 'rec_img_0'):
@@ -54,11 +55,6 @@ class VisualizerEnv(SimpleEnv4):
             if hasattr(self, 'rec_img_1'):
                 img = add_title_to_img(self.rec_img_1, text="[REC] Wrist View", shape=(640, 480))
                 self.env.viewer_rgb_overlay(img, loc='bottom right')
-            
-            # 3. 左上角: Back 后视图
-            if hasattr(self, 'rec_img_2'):
-                img = add_title_to_img(self.rec_img_2, text="[REC] Back View", shape=(640, 480))
-                self.env.viewer_rgb_overlay(img, loc='top left')
         
         else:
             # === Base 模式布局 (与 y_env4.py 一致) ===
@@ -140,7 +136,15 @@ def main():
     
     print("\nInitializing Environment...")
     # 🔥 关键：action_type 必须是 'joint_angle'，因为数据集保存的是关节角度而非末端位姿
-    env = VisualizerEnv(XML_PATH, mode=MODE, action_type='joint_angle', state_type='joint_angle')
+    # 🔥 添加随机初始化参数（匹配 y_env4.py 和 collect_data_v4.py）
+    env = VisualizerEnv(
+        XML_PATH, 
+        mode=MODE, 
+        action_type='joint_angle', 
+        state_type='joint_angle',
+        random_init_enabled=0,  # 可视化时关闭随机初始化
+        random_init_gripper_open=True
+    )
     
     print("\nStarting Playback...")
     print("Sync Mode: Wall-Clock Locking (Strict)")
@@ -219,6 +223,8 @@ def main():
                     item = dataset[frame_idx]
                     
                     # 执行动作
+                    # 🔥 注意：使用的是 action 数据（7维：6个关节角度 + 1个夹爪状态），而不是 state 数据
+                    # state 数据（6维）只包含末端位姿，不包含夹爪状态，无法完整复原机械臂动作
                     env.step(item['action'].numpy(), mode=MODE) 
                     
                     # 【base 模式】如果数据里有真实位置，强制把小车按回去
