@@ -18,8 +18,8 @@ DATASET_CONFIG = {
         'image_keys': ['front', 'left', 'right'],  # 底盘模式的相机
     },
     'arm': {
-        'repo_name': 'demo_data_arm_v4',
-        'root': './demo_data_arm_v4',
+        'repo_name': 'demo_data_arm_v5',
+        'root': './demo_data_arm_v5',
         'image_keys': ['agent', 'wrist'],  # 🔥 机械臂模式的相机（匹配 collect_data_v4.py）
     }
 }
@@ -27,7 +27,7 @@ DATASET_CONFIG = {
 XML_PATH = './asset/example_scene_y4.xml'
 FPS = 20  # 录制时的帧率
 LOOP_EPISODE = 0  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
-START_EPISODE = 299  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
+START_EPISODE = 121  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
 # ===========================================
 
 

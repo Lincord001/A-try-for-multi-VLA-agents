@@ -113,11 +113,14 @@ ARM_BASE_Y = 0.0                     # 机械臂基座Y坐标 (Arm base Y positi
 # --- 桌面参数 ---
 TABLE_Z_HEIGHT = 0.83                # 桌面高度 (Table height, 与V2一致)
 
-# --- 桌面范围限制（与V2一致）---
-TABLE_X_MIN = 0.25                   # 桌面X轴最小值 (Table X min boundary)
-TABLE_X_MAX = 0.35                   # 桌面X轴最大值 (Table X max boundary)
-TABLE_Y_MIN = -0.05                  # 桌面Y轴最小值 (Table Y min boundary)
-TABLE_Y_MAX = 0.25                   # 桌面Y轴最大值 (Table Y max boundary)
+# --- 桌面范围限制（根据XML文件中的实际桌子尺寸）---
+# 桌子body: pos="0 0 0", geom: pos="0.5 0 0.4", size="1.0 0.7 0.4" (半尺寸)
+# 实际范围: X=[-0.5, 1.5], Y=[-0.7, 0.7]
+# 留安全边距，避免物体掉出桌面
+TABLE_X_MIN = -0.4                   # 桌面X轴最小值 (Table X min boundary, 留0.1m边距)
+TABLE_X_MAX = 1.4                    # 桌面X轴最大值 (Table X max boundary, 留0.1m边距)
+TABLE_Y_MIN = -0.6                   # 桌面Y轴最小值 (Table Y min boundary, 留0.1m边距)
+TABLE_Y_MAX = 0.6                    # 桌面Y轴最大值 (Table Y max boundary, 留0.1m边距)
 
 # --- 🔥 扇形区域初始化参数（红色杯子，与V2一致）---
 MUG_MIN_DIST = 0.30                  # 离机械臂基座最近距离（米）(Min distance from arm base)
@@ -599,8 +602,9 @@ class SimpleEnv4:
         mug_z = TABLE_Z_HEIGHT
         
         # 3. 限制在桌面范围内（Clip，留点边缘余量）
-        mug_x = np.clip(mug_x, TABLE_X_MIN + 0.05, TABLE_X_MAX - 0.05)
-        mug_y = np.clip(mug_y, TABLE_Y_MIN + 0.05, TABLE_Y_MAX - 0.05)
+        # 🔥 修复：使用更小的边缘余量（0.01m），避免过度限制随机分布
+        mug_x = np.clip(mug_x, TABLE_X_MIN + 0.01, TABLE_X_MAX - 0.01)
+        mug_y = np.clip(mug_y, TABLE_Y_MIN + 0.01, TABLE_Y_MAX - 0.01)
         
         self.env.set_p_base_body(body_name='body_obj_mug_5', p=np.array([mug_x, mug_y, mug_z]))
         self.env.set_R_base_body(body_name='body_obj_mug_5', R=np.eye(3,3))
@@ -1108,14 +1112,16 @@ class SimpleEnv4:
         # 计算默认悬停点高度
         default_hover_z = EXPERT_FUNNEL_HOVER_Z if EXPERT_FUNNEL_HOVER_Z is not None else z_travel
         
-        # 计算悬停点和中间点的中点高度
-        hover_mid_z = (default_hover_z + EXPERT_FUNNEL_MID_Z) / 2.0
+        # 🔥 确定实际起始高度（如果添加了平滑上升，使用上升后的高度；否则使用当前高度）
+        actual_start_z = lift_end_pos[2] if lift_target_z is not None else current_pos[2]
         
-        # 检查条件：当前高度低于悬停点但高于中点
-        if current_pos[2] < default_hover_z and current_pos[2] > hover_mid_z:
-            # 将悬停点高度调整为当前夹爪高度
-            adjusted_hover_z = current_pos[2]
-            print(f"   🔧 Adjusted hover Z: {default_hover_z:.3f}m -> {adjusted_hover_z:.3f}m (current_pos[2]={current_pos[2]:.3f}m, mid_point={hover_mid_z:.3f}m)")
+        # 🔥 如果实际起始高度低于悬停点，则将悬停点调整为实际起始高度
+        if actual_start_z < default_hover_z:
+            adjusted_hover_z = actual_start_z
+            if lift_target_z is not None:
+                print(f"   🔧 Adjusted hover Z: {default_hover_z:.3f}m -> {adjusted_hover_z:.3f}m (after smooth lift from {current_pos[2]:.3f}m to {lift_end_pos[2]:.3f}m)")
+            else:
+                print(f"   🔧 Adjusted hover Z: {default_hover_z:.3f}m -> {adjusted_hover_z:.3f}m (current_pos[2]={current_pos[2]:.3f}m)")
         else:
             adjusted_hover_z = default_hover_z
         

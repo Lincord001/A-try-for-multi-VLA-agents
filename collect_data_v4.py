@@ -7,7 +7,7 @@ import glfw
 import threading
 import queue
 from PIL import Image  # 🔥 V4.1: 改回 PIL，与部署环境保持一致
-from mujoco_env.y_env4 import SimpleEnv4 
+from mujoco_env.y_env5_2 import SimpleEnv4 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -16,16 +16,56 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 # --- 🔥 随机初始化开关 (Random Initialization Switch) ---
-RANDOM_INIT_ENABLED = 0            # 0: 关闭, 1: 旧版(扇形区域), 2: 新版(圆形交集，仅简单模式)
+# ⚠️ 注意：这些参数现在作为默认值，实际值由 MULTI_CONFIG_RECORDING 中的配置覆盖
+RANDOM_INIT_ENABLED = 1            # 0: 关闭, 1: 旧版(扇形区域), 2: 新版(圆形交集，仅简单模式)
 RANDOM_INIT_GRIPPER_OPEN = True    # True: 初始化时夹爪张开, False: 初始化时夹爪闭合
 
-# --- 🤖 全自动录制 [P键] ---
-AUTO_RECORD_TARGET_EPISODES = 200    # 🎯 目标录制条数（达到后自动停止）
+# --- 🔥 杯子选择模式开关 (Mug Selection Mode Switch) ---
+SELECT_SMALLER_ANGLE_MUG = True   # True: 总是选择偏转角度更小的杯子, False: 随机选择
+
+# --- 🤖 多配置自动录制 [P键] ---
+# 🔥 定义多个配置，按顺序自动录制
+# 每个配置包含：
+#   - name: 配置名称（用于日志显示）
+#   - target_episodes: 该配置的目标录制条数
+#   - random_init_enabled: 随机初始化开关 (0/1/2)
+#   - random_init_gripper_open: 夹爪初始状态 (True/False)
+#   - select_smaller_angle_mug: 杯子选择模式 (True/False, 可选，默认使用全局 SELECT_SMALLER_ANGLE_MUG)
+# 
+MULTI_CONFIG_RECORDING = [
+    {
+        'name': 'stage_1',
+        'target_episodes': 200,
+        'random_init_enabled': 0,      
+        'random_init_gripper_open': True,
+        'select_smaller_angle_mug': False,  # 可选，不设置则使用全局默认值
+    },
+    {
+        'name': 'stage_2',
+        'target_episodes': 200,
+        'random_init_enabled': 1,      
+        'random_init_gripper_open': True,
+        'select_smaller_angle_mug': False,  # 可选，不设置则使用全局默认值
+    },
+    {
+        'name': 'stage_3',
+        'target_episodes': 200,
+        'random_init_enabled': 1,      
+        'random_init_gripper_open': True,
+        'select_smaller_angle_mug': True,  # 可选，不设置则使用全局默认值
+    },
+
+
+]
+
+# 🔥 如果 MULTI_CONFIG_RECORDING 为空列表，则使用单配置模式（向后兼容）
+# 单配置模式使用以下参数：
+AUTO_RECORD_TARGET_EPISODES = 150    # 🎯 单配置模式的目标录制条数
 AUTO_SHUTDOWN_ON_COMPLETE = True     # 🔌 完成后是否自动关闭仿真环境
 
 # --- 📁 数据集名称与路径 ---
-ARM_DATASET_NAME = 'omy_arm_data_v4'       # Arm 模式数据集名称
-ARM_DATASET_ROOT = './demo_data_arm_v4'    # Arm 模式数据集保存路径
+ARM_DATASET_NAME = 'omy_arm_data_v5_3'       # Arm 模式数据集名称
+ARM_DATASET_ROOT = './demo_data_arm_v5_3'    # Arm 模式数据集保存路径
 BASE_DATASET_NAME = 'omy_base_data_v4'     # Base 模式数据集名称  
 BASE_DATASET_ROOT = './demo_data_base_v4'  # Base 模式数据集保存路径
 
@@ -44,7 +84,7 @@ INITIAL_MODE = 'arm'                 # 启动时的模式: 'arm' 或 'base'
 # --- 全自动录制细节参数 ---
 AUTO_RESET_WAIT_FRAMES = 40          # 重置后等待帧数（约2秒，让物理引擎稳定）
 AUTO_CUP_CHECK_TOLERANCE = 0.05      # 物体 z 坐标容差（±5cm，超出判定为倒了）
-AUTO_RED_MUG_EXPECTED_Z = 0.83       # 🔥 红色杯子正常 z 坐标（与V2一致）
+AUTO_RED_MUG_EXPECTED_Z = 0.845      # 🔥 红色杯子正常 z 坐标（杯子初始化Z高度）
 AUTO_POST_SAVE_WAIT_FRAMES = 20      # 保存后等待帧数（约1秒）
 AUTO_MAX_RESET_RETRIES = 5           # 物体倒了时最大重试次数
 
@@ -86,6 +126,7 @@ AUTO_STATE_EXECUTING = 4
 AUTO_STATE_WAIT_QUEUE = 5
 AUTO_STATE_SAVING = 6
 AUTO_STATE_POST_SAVE = 7
+AUTO_STATE_SWITCHING_CONFIG = 8  # 🔥 配置切换状态
 
 
 # ================= 🧵 异步处理工作线程 🧵 =================
@@ -221,7 +262,7 @@ def load_or_create_dataset(mode):
         features = {
             "observation.state": {"dtype": "float32", "shape": mode_cfg['state_shape'], "names": ["state"]},
             "action": {"dtype": "float32", "shape": mode_cfg['action_shape'], "names": ["action"]},
-            "obj_init": {"dtype": "float32", "shape": (6,), "names": ["obj_init"]},  # 🔥 与V2一致：红色杯子(3) + 盘子(3)
+            "obj_init": {"dtype": "float32", "shape": (9,), "names": ["obj_init"]},  # 🔥 红色杯子(3) + 蓝色杯子(3) + 盘子(3)
         }
 
         if mode == 'arm':
@@ -256,10 +297,12 @@ def main():
     print(f"🔥 V4与V2一致: Red mug + Plate")
     random_init_mode_names = {0: "Disabled", 1: "V1 (扇形区域)", 2: "V2 (圆形交集)"}
     print(f"🎲 Random Init: {RANDOM_INIT_ENABLED} ({random_init_mode_names.get(RANDOM_INIT_ENABLED, 'Unknown')}) (Gripper: {'Open' if RANDOM_INIT_GRIPPER_OPEN else 'Closed'})")
+    print(f"🎯 Select Smaller Angle Mug: {'Enabled' if SELECT_SMALLER_ANGLE_MUG else 'Disabled'}")
     PnPEnv = SimpleEnv4(
         XML_PATH, seed=SEED, state_type='joint_angle', 
         random_init_enabled=RANDOM_INIT_ENABLED,
-        random_init_gripper_open=RANDOM_INIT_GRIPPER_OPEN
+        random_init_gripper_open=RANDOM_INIT_GRIPPER_OPEN,
+        select_smaller_angle_mug=SELECT_SMALLER_ANGLE_MUG
     )
     PnPEnv.reset(mode=current_mode)
 
@@ -289,12 +332,23 @@ def main():
     
     # 🤖 全自动录制状态变量
     auto_state = AUTO_STATE_IDLE           # 当前自动录制状态
-    auto_recorded_count = 0                # 已录制的 episode 数量
+    auto_recorded_count = 0                # 已录制的 episode 数量（当前配置）
+    auto_total_recorded_count = 0          # 🔥 总录制数量（所有配置累计）
     auto_wait_counter = 0                  # 等待计数器（帧数）
     auto_reset_retries = 0                 # 物体倒了重试次数
     auto_shutdown_requested = False        # 🔥 是否请求自动关闭
     auto_waiting_for_random_init = False   # 🔥 是否正在等待随机初始化完成
+    auto_mug_selection_reset_count = 0      # 🔥 因为杯子选择问题重置的次数（最多两次）
+    
+    # 🔥 多配置支持变量
+    auto_current_config_idx = -1           # 当前配置索引（-1表示未开始）
+    auto_configs = MULTI_CONFIG_RECORDING if len(MULTI_CONFIG_RECORDING) > 0 else None  # 配置列表
+    auto_use_multi_config = auto_configs is not None  # 是否使用多配置模式
+    auto_current_config = None              # 当前配置对象
 
+    # 🔥 检查是否使用多配置模式
+    use_multi_config = len(MULTI_CONFIG_RECORDING) > 0
+    
     print("\n" + "="*60)
     print(f" 🚀 DATA COLLECTION MODE: {current_mode.upper()} (HOT-SWITCH ENABLED)")
     print(f" 📁 ARM  Dataset: {DATASET_CONFIG['arm']['repo_name']} (Episode #{episode_ids['arm']})")
@@ -317,9 +371,17 @@ def main():
     print("  [O] : 🏠 Smooth Return Home (平滑归位机械臂)")
     print("-"*60)
     print(" 🤖🔄 FULL-AUTO Recording (全自动录制):")
-    print(f"  [P] : 🔥 Start/Stop Full-Auto Mode (Target: {AUTO_RECORD_TARGET_EPISODES} episodes)")
-    print("        → Auto: Reset → Check Cups → Expert → Save → Loop")
-    print("        → Press [P] again to STOP (discard current recording)")
+    if use_multi_config:
+        total_target = sum(cfg['target_episodes'] for cfg in MULTI_CONFIG_RECORDING)
+        print(f"  [P] : 🔥 Start/Stop Multi-Config Full-Auto Mode")
+        print(f"        → Total: {len(MULTI_CONFIG_RECORDING)} configs, {total_target} episodes")
+        print(f"        → Configs: {', '.join([cfg['name'] for cfg in MULTI_CONFIG_RECORDING])}")
+        print("        → Auto: Reset → Check Cups → Expert → Save → Loop → Switch Config")
+        print("        → Press [P] again to STOP (discard current recording)")
+    else:
+        print(f"  [P] : 🔥 Start/Stop Full-Auto Mode (Target: {AUTO_RECORD_TARGET_EPISODES} episodes)")
+        print("        → Auto: Reset → Check Cups → Expert → Save → Loop")
+        print("        → Press [P] again to STOP (discard current recording)")
     print("-"*60)
     print(f" Current Mode: {current_mode.upper()} | Next Episode ID: {episode_ids[current_mode]}")
     print("="*60 + "\n")
@@ -340,6 +402,24 @@ def main():
                     
                     # ----- STATE: RESETTING -----
                     if auto_state == AUTO_STATE_RESETTING:
+                        # 🔥 使用当前配置的参数重置环境
+                        if auto_use_multi_config and auto_current_config is not None:
+                            # 多配置模式：使用当前配置的参数
+                            config_random_init = auto_current_config['random_init_enabled']
+                            config_gripper_open = auto_current_config['random_init_gripper_open']
+                            # 🔥 杯子选择模式：如果配置中有指定则使用，否则使用全局默认值
+                            config_select_smaller_angle = auto_current_config.get('select_smaller_angle_mug', SELECT_SMALLER_ANGLE_MUG)
+                            # 更新环境的随机初始化参数
+                            PnPEnv.random_init_enabled = config_random_init
+                            PnPEnv.random_init_gripper_open = config_gripper_open
+                            # 🔥 更新环境的杯子选择模式参数
+                            PnPEnv.select_smaller_angle_mug = config_select_smaller_angle
+                        else:
+                            # 单配置模式：使用全局默认参数
+                            config_random_init = RANDOM_INIT_ENABLED
+                            config_gripper_open = RANDOM_INIT_GRIPPER_OPEN
+                            config_select_smaller_angle = SELECT_SMALLER_ANGLE_MUG
+                        
                         # 执行重置
                         PnPEnv.reset(mode='arm')
                         # 清空残留数据
@@ -348,9 +428,10 @@ def main():
                             dataset.clear_episode_buffer()
                         auto_wait_counter = AUTO_RESET_WAIT_FRAMES
                         auto_waiting_for_random_init = False  # 重置标志
+                        # 🔥 注意：auto_mug_selection_reset_count 不在这里重置，保持状态直到下一轮录制开始
                         auto_state = AUTO_STATE_CHECK_CUPS
-                        # 🔥 检查是否启用了随机初始化
-                        if RANDOM_INIT_ENABLED != 0 and getattr(PnPEnv, 'moving_to_random', False):
+                        # 🔥 检查是否启用了随机初始化（使用当前配置的参数）
+                        if config_random_init != 0 and getattr(PnPEnv, 'moving_to_random', False):
                             # RANDOM_INIT_MOVE_STEPS = 75 (约3.75秒，20Hz)
                             print(f"   ⏳ Waiting for random initialization to complete (will take ~3.8s)...")
                             auto_waiting_for_random_init = True
@@ -420,6 +501,28 @@ def main():
                             # 🔥 确保环境已经选好了目标（在启动专家策略前强制调用一次）
                             PnPEnv.set_instruction()
                             
+                            # 🔥 检查杯子选择逻辑：如果 select_smaller_angle_mug 开启，且选中的不是蓝色杯子，有50%概率重置
+                            should_reset_for_mug = False
+                            if (auto_use_multi_config and auto_current_config is not None):
+                                config_select_smaller_angle = auto_current_config.get('select_smaller_angle_mug', SELECT_SMALLER_ANGLE_MUG)
+                            else:
+                                config_select_smaller_angle = SELECT_SMALLER_ANGLE_MUG
+                            
+                            if config_select_smaller_angle and auto_mug_selection_reset_count < 2:
+                                # 检查选中的杯子是否是蓝色杯子
+                                target_color = getattr(PnPEnv, 'target_color', None)
+                                if target_color != 'blue':
+                                    # 选中的不是蓝色杯子，100%重置环境（至多重置两次）
+                                    should_reset_for_mug = True
+                                    auto_mug_selection_reset_count += 1  # 增加重置计数
+                                    print(f"   🔄 Selected mug is not blue (selected: {target_color}). Resetting environment to retry... (Attempt {auto_mug_selection_reset_count}/2)")
+                            
+                            if should_reset_for_mug:
+                                # 重置环境，重新判定
+                                auto_state = AUTO_STATE_RESETTING
+                                auto_wait_counter = 0
+                                continue  # 跳过后续逻辑，直接进入重置状态
+                            
                             # 清空残留状态
                             is_recording = False
                             current_frames = 0
@@ -470,34 +573,97 @@ def main():
                             dataset.save_episode()
                             episode_ids['arm'] += 1
                             auto_recorded_count += 1
-                            print(f"   ✅ [AUTO-SAVED] Episode {episode_ids['arm'] - 1} saved! ({auto_recorded_count}/{AUTO_RECORD_TARGET_EPISODES})")
+                            auto_total_recorded_count += 1
+                            
+                            # 🔥 获取当前配置的目标数量
+                            if auto_use_multi_config and auto_current_config is not None:
+                                target_episodes = auto_current_config['target_episodes']
+                                config_name = auto_current_config['name']
+                                print(f"   ✅ [AUTO-SAVED] Episode {episode_ids['arm'] - 1} saved! ({auto_recorded_count}/{target_episodes}) [{config_name}]")
+                            else:
+                                target_episodes = AUTO_RECORD_TARGET_EPISODES
+                                print(f"   ✅ [AUTO-SAVED] Episode {episode_ids['arm'] - 1} saved! ({auto_recorded_count}/{target_episodes})")
                         except Exception as e:
                             print(f"   ❌ Save error: {e}")
                         finally:
                             worker.saving_in_progress = False
                         
-                        # 检查是否达到目标
-                        if auto_recorded_count >= AUTO_RECORD_TARGET_EPISODES:
-                            print(f"\n" + "="*60)
-                            print(f" 🎉 FULL-AUTO MODE COMPLETED! 🎉")
-                            print(f" 📊 Total recorded: {auto_recorded_count} episodes")
-                            print(f" 📁 Final Episode ID: {episode_ids['arm']}")
-                            print(f"="*60 + "\n")
-                            auto_state = AUTO_STATE_IDLE
-                            # 🔥 如果设置了自动关闭，请求关闭仿真环境
-                            if AUTO_SHUTDOWN_ON_COMPLETE:
-                                auto_shutdown_requested = True
-                                print("🔌 Auto-shutdown requested. Closing simulation...")
+                        # 🔥 检查当前配置是否完成
+                        if auto_use_multi_config and auto_current_config is not None:
+                            target_episodes = auto_current_config['target_episodes']
+                            if auto_recorded_count >= target_episodes:
+                                # 当前配置完成，切换到下一个配置
+                                print(f"\n" + "="*60)
+                                print(f" ✅ Config '{auto_current_config['name']}' COMPLETED!")
+                                print(f" 📊 Recorded: {auto_recorded_count}/{target_episodes} episodes")
+                                print(f" 📊 Total recorded so far: {auto_total_recorded_count} episodes")
+                                print(f"="*60)
+                                
+                                # 切换到下一个配置
+                                auto_current_config_idx += 1
+                                if auto_current_config_idx < len(auto_configs):
+                                    # 还有下一个配置
+                                    auto_current_config = auto_configs[auto_current_config_idx]
+                                    auto_recorded_count = 0  # 重置当前配置的计数
+                                    auto_mug_selection_reset_count = 0  # 🔥 重置杯子选择重置计数（新配置开始）
+                                    config_select_smaller_angle = auto_current_config.get('select_smaller_angle_mug', SELECT_SMALLER_ANGLE_MUG)
+                                    print(f"\n🔄 Switching to Config {auto_current_config_idx + 1}/{len(auto_configs)}: '{auto_current_config['name']}'")
+                                    print(f"   Target: {auto_current_config['target_episodes']} episodes")
+                                    print(f"   Random Init: {auto_current_config['random_init_enabled']} (Gripper: {'Open' if auto_current_config['random_init_gripper_open'] else 'Closed'})")
+                                    print(f"   Select Smaller Angle Mug: {'Enabled' if config_select_smaller_angle else 'Disabled'}")
+                                    auto_state = AUTO_STATE_SWITCHING_CONFIG
+                                else:
+                                    # 所有配置完成
+                                    print(f"\n" + "="*60)
+                                    print(f" 🎉 ALL CONFIGS COMPLETED! 🎉")
+                                    print(f" 📊 Total recorded: {auto_total_recorded_count} episodes")
+                                    print(f" 📁 Final Episode ID: {episode_ids['arm']}")
+                                    print(f"="*60 + "\n")
+                                    auto_state = AUTO_STATE_IDLE
+                                    # 🔥 如果设置了自动关闭，请求关闭仿真环境
+                                    if AUTO_SHUTDOWN_ON_COMPLETE:
+                                        auto_shutdown_requested = True
+                                        print("🔌 Auto-shutdown requested. Closing simulation...")
+                            else:
+                                # 当前配置未完成，继续下一轮
+                                auto_mug_selection_reset_count = 0  # 🔥 重置杯子选择重置计数（新一轮开始）
+                                auto_wait_counter = AUTO_POST_SAVE_WAIT_FRAMES
+                                auto_state = AUTO_STATE_POST_SAVE
                         else:
-                            # 继续下一轮
-                            auto_wait_counter = AUTO_POST_SAVE_WAIT_FRAMES
-                            auto_state = AUTO_STATE_POST_SAVE
+                            # 单配置模式
+                            if auto_recorded_count >= AUTO_RECORD_TARGET_EPISODES:
+                                print(f"\n" + "="*60)
+                                print(f" 🎉 FULL-AUTO MODE COMPLETED! 🎉")
+                                print(f" 📊 Total recorded: {auto_recorded_count} episodes")
+                                print(f" 📁 Final Episode ID: {episode_ids['arm']}")
+                                print(f"="*60 + "\n")
+                                auto_state = AUTO_STATE_IDLE
+                                # 🔥 如果设置了自动关闭，请求关闭仿真环境
+                                if AUTO_SHUTDOWN_ON_COMPLETE:
+                                    auto_shutdown_requested = True
+                                    print("🔌 Auto-shutdown requested. Closing simulation...")
+                            else:
+                                # 继续下一轮
+                                auto_mug_selection_reset_count = 0  # 🔥 重置杯子选择重置计数（新一轮开始）
+                                auto_wait_counter = AUTO_POST_SAVE_WAIT_FRAMES
+                                auto_state = AUTO_STATE_POST_SAVE
+                    
+                    # ----- STATE: SWITCHING_CONFIG (配置切换) -----
+                    elif auto_state == AUTO_STATE_SWITCHING_CONFIG:
+                        # 配置切换完成，开始重置环境（使用新配置的参数）
+                        auto_state = AUTO_STATE_RESETTING
                     
                     # ----- STATE: POST_SAVE (保存后等待) -----
                     elif auto_state == AUTO_STATE_POST_SAVE:
                         auto_wait_counter -= 1
                         if auto_wait_counter <= 0:
-                            print(f"\n🔄 [AUTO] Resetting for next episode ({auto_recorded_count + 1}/{AUTO_RECORD_TARGET_EPISODES})...")
+                            # 🔥 显示当前配置信息
+                            if auto_use_multi_config and auto_current_config is not None:
+                                target_episodes = auto_current_config['target_episodes']
+                                config_name = auto_current_config['name']
+                                print(f"\n🔄 [AUTO] Resetting for next episode ({auto_recorded_count + 1}/{target_episodes}) [{config_name}]...")
+                            else:
+                                print(f"\n🔄 [AUTO] Resetting for next episode ({auto_recorded_count + 1}/{AUTO_RECORD_TARGET_EPISODES})...")
                             auto_state = AUTO_STATE_RESETTING
                 
                 # ================= 按键逻辑 =================
@@ -698,7 +864,13 @@ def main():
                     elif auto_state != AUTO_STATE_IDLE:
                         # 🔥 正在自动录制中，按 P 停止
                         print(f"\n🛑 [P] Stopping Full-Auto Mode...")
-                        print(f"   Recorded {auto_recorded_count}/{AUTO_RECORD_TARGET_EPISODES} episodes before stop.")
+                        if auto_use_multi_config and auto_current_config is not None:
+                            target_episodes = auto_current_config['target_episodes']
+                            config_name = auto_current_config['name']
+                            print(f"   Recorded {auto_recorded_count}/{target_episodes} episodes in '{config_name}' before stop.")
+                            print(f"   Total recorded: {auto_total_recorded_count} episodes across all configs.")
+                        else:
+                            print(f"   Recorded {auto_recorded_count}/{AUTO_RECORD_TARGET_EPISODES} episodes before stop.")
                         
                         # 丢弃当前正在录制的数据
                         is_recording = False
@@ -717,6 +889,10 @@ def main():
                             dataset.clear_episode_buffer()
                         
                         auto_state = AUTO_STATE_IDLE
+                        auto_current_config_idx = -1
+                        auto_current_config = None
+                        auto_recorded_count = 0
+                        auto_total_recorded_count = 0
                         print(f"❌ [AUTO-STOPPED] Current recording discarded. Full-Auto Mode DISABLED.")
                     else:
                         # 🔥 启动全自动录制
@@ -731,19 +907,57 @@ def main():
                             if hasattr(dataset, 'episode_buffer') and dataset.episode_buffer is not None:
                                 dataset.clear_episode_buffer()
                             
-                            auto_recorded_count = 0
+                            # 🔥 初始化多配置模式
+                            if auto_use_multi_config:
+                                auto_current_config_idx = 0
+                                auto_current_config = auto_configs[0]
+                                auto_recorded_count = 0
+                                auto_total_recorded_count = 0
+                                
+                                # 计算总目标数量
+                                total_target = sum(cfg['target_episodes'] for cfg in auto_configs)
+                                
+                                print(f"\n" + "="*60)
+                                print(f" 🤖🔄 MULTI-CONFIG FULL-AUTO MODE ACTIVATED 🔄🤖")
+                                print(f" 📋 Total Configs: {len(auto_configs)}")
+                                print(f" 🎯 Total Target: {total_target} episodes")
+                                print(f" 📁 Dataset: {DATASET_CONFIG['arm']['repo_name']}")
+                                print(f" 🔢 Starting Episode ID: {episode_ids['arm']}")
+                                print(f" ⏱️ Press [P] again to STOP at any time")
+                                print(f"="*60)
+                                print(f"\n📋 Config List:")
+                                for idx, cfg in enumerate(auto_configs):
+                                    marker = "👉" if idx == 0 else "  "
+                                    cfg_select_smaller = cfg.get('select_smaller_angle_mug', SELECT_SMALLER_ANGLE_MUG)
+                                    print(f"   {marker} [{idx+1}] {cfg['name']}: {cfg['target_episodes']} episodes")
+                                    print(f"       Random Init: {cfg['random_init_enabled']}, Gripper: {'Open' if cfg['random_init_gripper_open'] else 'Closed'}, Select Smaller Angle: {'Enabled' if cfg_select_smaller else 'Disabled'}")
+                                print(f"="*60)
+                                print(f"\n🔄 [AUTO] Starting Config 1/{len(auto_configs)}: '{auto_current_config['name']}'")
+                                print(f"   Target: {auto_current_config['target_episodes']} episodes")
+                                config_select_smaller_angle = auto_current_config.get('select_smaller_angle_mug', SELECT_SMALLER_ANGLE_MUG)
+                                print(f"   Random Init: {auto_current_config['random_init_enabled']} (Gripper: {'Open' if auto_current_config['random_init_gripper_open'] else 'Closed'})")
+                                print(f"   Select Smaller Angle Mug: {'Enabled' if config_select_smaller_angle else 'Disabled'}")
+                            else:
+                                # 单配置模式
+                                auto_recorded_count = 0
+                                auto_total_recorded_count = 0
+                                print(f"\n" + "="*60)
+                                print(f" 🤖🔄 FULL-AUTO MODE ACTIVATED 🔄🤖")
+                                print(f" 🎯 Target: {AUTO_RECORD_TARGET_EPISODES} episodes")
+                                print(f" 📁 Dataset: {DATASET_CONFIG['arm']['repo_name']}")
+                                print(f" 🔢 Starting Episode ID: {episode_ids['arm']}")
+                                print(f" ⏱️ Press [P] again to STOP at any time")
+                                print(f"="*60)
+                            
                             auto_state = AUTO_STATE_RESETTING
                             auto_wait_counter = 0
                             auto_reset_retries = 0
+                            auto_mug_selection_reset_count = 0  # 🔥 重置杯子选择重置计数（全自动模式启动）
                             
-                            print(f"\n" + "="*60)
-                            print(f" 🤖🔄 FULL-AUTO MODE ACTIVATED 🔄🤖")
-                            print(f" 🎯 Target: {AUTO_RECORD_TARGET_EPISODES} episodes")
-                            print(f" 📁 Dataset: {DATASET_CONFIG['arm']['repo_name']}")
-                            print(f" 🔢 Starting Episode ID: {episode_ids['arm']}")
-                            print(f" ⏱️ Press [P] again to STOP at any time")
-                            print(f"="*60)
-                            print(f"\n🔄 [AUTO] Resetting environment (Episode {auto_recorded_count + 1}/{AUTO_RECORD_TARGET_EPISODES})...")
+                            if auto_use_multi_config:
+                                print(f"\n🔄 [AUTO] Resetting environment (Episode {auto_recorded_count + 1}/{auto_current_config['target_episodes']}) [{auto_current_config['name']}]...")
+                            else:
+                                print(f"\n🔄 [AUTO] Resetting environment (Episode {auto_recorded_count + 1}/{AUTO_RECORD_TARGET_EPISODES})...")
 
                 # ================= 🔥 [C] 热切换模式 🔥 ================= (全自动模式下禁用)
                 if PnPEnv.env.is_key_pressed_once(glfw.KEY_C):

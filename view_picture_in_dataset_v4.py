@@ -4,6 +4,7 @@ import numpy as np
 import argparse
 import sys
 import matplotlib.pyplot as plt
+from matplotlib.widgets import TextBox
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 def natural_sort_key(s):
@@ -161,17 +162,27 @@ class DatasetViewer:
         print("  [W] 或 [↑] : 下一个 Episode")
         print("  [S] 或 [↓] : 上一个 Episode")
         print("  [Q] 或 [ESC]: 退出")
+        print("  输入框: 输入数字跳转 (例如: '5' 跳转到 Episode 5, '2:10' 跳转到 Episode 2 的第 10 帧)")
         print("="*50 + "\n")
 
         # 设置 matplotlib 交互模式
         plt.ion()
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig = plt.figure(figsize=(12, 9))
         fig.canvas.manager.set_window_title('Dataset Viewer')
+        
+        # 创建主图像区域（为输入框留出空间）
+        ax = plt.subplot2grid((10, 1), (0, 0), rowspan=9)
         
         # 初始化显示
         image = self.get_frame_image(self.current_frame_idx)
         im = ax.imshow(image)
         ax.axis('off')
+        
+        # 创建输入框区域
+        axbox = plt.subplot2grid((10, 1), (9, 0))
+        axbox.axis('off')  # 隐藏输入框区域的坐标轴
+        text_box = TextBox(axbox, '跳转到: ', initial='', textalignment='left')
+        
         plt.tight_layout()
         
         def update_display():
@@ -223,8 +234,64 @@ class DatasetViewer:
                     self.load_episode(self.current_ep_idx - 1)
                     update_display()
         
+        def on_text_submit(text):
+            """处理输入框提交"""
+            text = text.strip()
+            if not text:
+                return
+            
+            try:
+                # 检查是否是 "ep:frame" 格式
+                if ':' in text:
+                    parts = text.split(':')
+                    if len(parts) == 2:
+                        ep_idx = int(parts[0].strip())
+                        frame_idx = int(parts[1].strip())
+                        
+                        # 验证 episode 索引
+                        if ep_idx < 0 or ep_idx >= self.num_episodes:
+                            print(f"⚠️ 警告: Episode 索引 {ep_idx} 超出范围 [0, {self.num_episodes-1}]")
+                            return
+                        
+                        # 加载指定的 episode
+                        self.load_episode(ep_idx)
+                        
+                        # 验证 frame 索引
+                        if frame_idx < 0 or frame_idx >= self.frame_count:
+                            print(f"⚠️ 警告: Frame 索引 {frame_idx} 超出范围 [0, {self.frame_count-1}]")
+                            self.current_frame_idx = 0
+                        else:
+                            self.current_frame_idx = frame_idx
+                        
+                        update_display()
+                        print(f"✅ 跳转到 Episode {ep_idx}, Frame {frame_idx}")
+                        text_box.set_val('')  # 清空输入框
+                        return
+                
+                # 否则，当作 episode 索引处理
+                ep_idx = int(text)
+                
+                if ep_idx < 0 or ep_idx >= self.num_episodes:
+                    print(f"⚠️ 警告: Episode 索引 {ep_idx} 超出范围 [0, {self.num_episodes-1}]")
+                    text_box.set_val('')  # 清空输入框
+                    return
+                
+                # 跳转到指定的 episode，frame 设为 0
+                self.load_episode(ep_idx)
+                self.current_frame_idx = 0
+                update_display()
+                print(f"✅ 跳转到 Episode {ep_idx}")
+                text_box.set_val('')  # 清空输入框
+                
+            except ValueError:
+                print(f"⚠️ 警告: 无效的输入格式。请输入数字 (例如: '5') 或 'ep:frame' 格式 (例如: '2:10')")
+                text_box.set_val('')  # 清空输入框
+        
         # 绑定键盘事件
         fig.canvas.mpl_connect('key_press_event', on_key_press)
+        
+        # 绑定输入框提交事件
+        text_box.on_submit(on_text_submit)
         
         # 初始显示
         update_display()
@@ -239,8 +306,8 @@ class DatasetViewer:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="查看采集到的机器人数据集 (LeRobot 格式)")
-    parser.add_argument('--data_dir', type=str, default='./demo_data_arm_v4', 
-                        help="数据集根目录路径 (默认: ./demo_data_arm_v4)")
+    parser.add_argument('--data_dir', type=str, default='./demo_data_arm_v5', 
+                        help="数据集根目录路径 (默认: ./demo_data_arm_v2)")
     args = parser.parse_args()
     
     viewer = DatasetViewer(args.data_dir)

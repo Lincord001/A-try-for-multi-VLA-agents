@@ -23,7 +23,7 @@ import glfw
 
 # --- 高度参数 ---
 # 🔥 V4环境调整：桌面0.83m，盘子0.82m (与V2一致)
-EXPERT_Z_TRAVEL_BASE = 1.0           # 巡航基础高度 (Transport cruise height) = 桌面0.83 + 0.17
+EXPERT_Z_TRAVEL_BASE = 0.95           # 巡航基础高度 (Transport cruise height) = 桌面0.83 + 0.17
 EXPERT_Z_TRAVEL_NOISE = 0.03         # 巡航高度随机扰动范围 ± (Cruise height noise)
 EXPERT_Z_GRASP_BASE = 0.84           # 抓取高度基础值 (Grasp height) = 桌面高度
 EXPERT_Z_PLACE_BASE = 0.87           # 放置高度基础值 (Place height) = 盘子高度
@@ -94,10 +94,19 @@ RANDOM_INIT_CIRCLE_INNER_RADIUS = 0.02  # 🔥 新版随机初始化：以红色
 RANDOM_INIT_CIRCLE_OUTER_RADIUS = 0.05  # 🔥 新版随机初始化：以红色杯子为中心的环形区域外半径（米）
 RANDOM_INIT_ANGLE_MIN = 0            # 角度范围最小值（度）(Min angle in degrees, 与V2一致)
 RANDOM_INIT_ANGLE_MAX = 45           # 角度范围最大值（度）(Max angle in degrees, 与V2一致)
+# 🔥 V1模式专用角度参数
+RANDOM_INIT_ANGLE_MIN_V1 = 0         # V1模式角度范围最小值（度）(V1 Min angle in degrees)
+RANDOM_INIT_ANGLE_MAX_V1 = 15        # V1模式角度范围最大值（度）(V1 Max angle in degrees, 0~15度)
 RANDOM_INIT_RADIUS_MIN = 0.3         # 径向距离最小值（米）(Min radial distance in meters)
 RANDOM_INIT_RADIUS_MAX = 0.4         # 径向距离最大值（米）(Max radial distance in meters)
+# 🔥 V1模式专用径向距离参数
+RANDOM_INIT_RADIUS_MIN_V1 = 0.275   # V1模式径向距离最小值（米）(V1 Min radial distance in meters)
+RANDOM_INIT_RADIUS_MAX_V1 = 0.325   # V1模式径向距离最大值（米）(V1 Max radial distance in meters)
 RANDOM_INIT_Z_MIN = 0.9              # Z坐标最小值（米）(Min Z coordinate in meters) - 旧版使用 = 桌面0.83 + 0.07
 RANDOM_INIT_Z_MAX = 1.0              # Z坐标最大值（米）(Max Z coordinate in meters) - 旧版使用 = 巡航高度附近
+# 🔥 V1模式专用Z轴参数
+RANDOM_INIT_Z_MIN_V1 = 0.95         # V1模式Z坐标最小值（米）(V1 Min Z coordinate in meters)
+RANDOM_INIT_Z_MAX_V1 = 1.0           # V1模式Z坐标最大值（米）(V1 Max Z coordinate in meters) = 正常初始化高度
 RANDOM_INIT_Z_MIN_V2 = 0.88          # 🔥 新版随机初始化Z坐标最小值（米） = 中间点高度
 RANDOM_INIT_Z_MAX_V2 = 1.0           # 🔥 新版随机初始化Z坐标最大值（米） = 巡航高度附近
 RANDOM_INIT_GRIPPER_OPEN = True      # 🔥 初始化时夹爪是否张开 (True=张开, False=闭合)
@@ -111,19 +120,33 @@ ARM_BASE_X = 0.0                     # 机械臂基座X坐标 (Arm base X positi
 ARM_BASE_Y = 0.0                     # 机械臂基座Y坐标 (Arm base Y position, 与V2一致)
 
 # --- 桌面参数 ---
-TABLE_Z_HEIGHT = 0.83                # 桌面高度 (Table height, 与V2一致)
+TABLE_Z_HEIGHT = 0.845               # 桌面高度 (Table height, 杯子初始化Z高度)
 
 # --- 桌面范围限制（与V2一致）---
-TABLE_X_MIN = 0.25                   # 桌面X轴最小值 (Table X min boundary)
-TABLE_X_MAX = 0.35                   # 桌面X轴最大值 (Table X max boundary)
-TABLE_Y_MIN = -0.05                  # 桌面Y轴最小值 (Table Y min boundary)
-TABLE_Y_MAX = 0.25                   # 桌面Y轴最大值 (Table Y max boundary)
+TABLE_X_MIN = 0                   # 桌面X轴最小值 (Table X min boundary)
+TABLE_X_MAX = 1.5                  # 桌面X轴最大值 (Table X max boundary)
+TABLE_Y_MIN = -0.1                  # 桌面Y轴最小值 (Table Y min boundary)
+TABLE_Y_MAX = 1                   # 桌面Y轴最大值 (Table Y max boundary)
 
-# --- 🔥 扇形区域初始化参数（红色杯子，与V2一致）---
-MUG_MIN_DIST = 0.30                  # 离机械臂基座最近距离（米）(Min distance from arm base)
-MUG_MAX_DIST = 0.40                  # 离机械臂基座最远距离（米）(Max distance from arm base)
-MUG_MIN_ANGLE = 0.0                  # 左偏角度（度）(Min angle in degrees, 0° = 正前方)
-MUG_MAX_ANGLE = 45.0                 # 右偏角度（度）(Max angle in degrees, 45° = 右偏45度)
+# --- 🔥 红色和蓝色杯子初始化参数（两个弧线段）---
+# 弧线段1：距离机械臂基座0.3米，角度从0度到向右45度
+MUG_ARC1_RADIUS = 0.25                # 弧线段1的半径（米）(Arc 1 radius in meters)
+MUG_ARC1_ANGLE_MIN = 0.0            # 弧线段1的最小角度（度）(Arc 1 min angle in degrees, 0° = 正前方)
+MUG_ARC1_ANGLE_MAX = 45.0           # 弧线段1的最大角度（度）(Arc 1 max angle in degrees, 45° = 右偏45度)
+
+# 弧线段2：距离机械臂基座0.4米，角度从0度到向右30度
+MUG_ARC2_RADIUS = 0.35                # 弧线段2的半径（米）(Arc 2 radius in meters)
+MUG_ARC2_ANGLE_MIN = 0.0            # 弧线段2的最小角度（度）(Arc 2 min angle in degrees, 0° = 正前方)
+MUG_ARC2_ANGLE_MAX = 45.0           # 弧线段2的最大角度（度）(Arc 2 max angle in degrees, 30° = 右偏30度)
+
+# --- 🔥 红色和蓝色杯子间距参数 ---
+MUG_MIN_SPACING = 0.15              # 红色和蓝色杯子之间的最小间隔（米）(Min spacing between red and blue mugs, 5cm)
+
+# --- 以下参数保留用于夹爪随机初始化逻辑（V1版本仍使用扇形区域）---
+MUG_MIN_DIST = 0.30                  # 离机械臂基座最近距离（米）(Min distance from arm base) - 用于V1随机初始化
+MUG_MAX_DIST = 0.40                  # 离机械臂基座最远距离（米）(Max distance from arm base) - 用于V1随机初始化
+MUG_MIN_ANGLE = 0.0                  # 左偏角度（度）(Min angle in degrees, 0° = 正前方) - 用于V1随机初始化
+MUG_MAX_ANGLE = 45.0                 # 右偏角度（度）(Max angle in degrees, 45° = 右偏45度) - 用于V1随机初始化
 
 # --- 隐藏物体参数 ---
 HIDDEN_OBJ_X = 20.0                  # 隐藏物体的X坐标（远离场景）
@@ -138,13 +161,15 @@ NAV_INSTRUCTIONS = [
     "Move to the workbench."
 ]
 
-# 🔥 V4与V2一致：只使用红色杯子放到盘子上
-# 任务指令固定为 "Place the red mug on the plate."
-ARM_INSTRUCTION = "Place the red mug on the plate."
+# 🔥 任务指令：支持红色和蓝色杯子
+ARM_INSTRUCTIONS = [
+    "Place the red mug on the plate.",
+    "Place the blue mug on the plate."
+]
 
 class SimpleEnv4:
     def __init__(self, xml_path, action_type='eef_pose', state_type='joint_angle', seed=None, 
-                 random_init_enabled=False, random_init_gripper_open=True):
+                 random_init_enabled=False, random_init_gripper_open=True, select_smaller_angle_mug=False):
         self.env = MuJoCoParserClass(name='Tabletop', rel_xml_path=xml_path)
         self.action_type = action_type
         self.state_type = state_type
@@ -153,6 +178,9 @@ class SimpleEnv4:
         # 🔥 随机初始化开关（由外部传入）
         self.random_init_enabled = random_init_enabled
         self.random_init_gripper_open = random_init_gripper_open
+        
+        # 🔥 杯子选择模式开关（由外部传入）
+        self.select_smaller_angle_mug = select_smaller_angle_mug
         
         # 默认模式
         self.control_mode = 'arm' 
@@ -238,17 +266,18 @@ class SimpleEnv4:
         Returns:
             tuple: (x_target, y_target, z_target) 目标位置坐标
         """
-        # 1. 生成随机角度和径向距离
-        angle_deg = random.uniform(RANDOM_INIT_ANGLE_MIN, RANDOM_INIT_ANGLE_MAX)
+        # 1. 生成随机角度和径向距离（使用V1专用参数：角度0~15度，径向距离0.275~0.325米）
+        angle_deg = random.uniform(RANDOM_INIT_ANGLE_MIN_V1, RANDOM_INIT_ANGLE_MAX_V1)
         angle_rad = np.deg2rad(angle_deg)
-        radius = random.uniform(RANDOM_INIT_RADIUS_MIN, RANDOM_INIT_RADIUS_MAX)
+        radius = random.uniform(RANDOM_INIT_RADIUS_MIN_V1, RANDOM_INIT_RADIUS_MAX_V1)
         
         # 2. 转换为笛卡尔坐标（相对于机械臂基座 ARM_BASE_X, ARM_BASE_Y）
         x_target = ARM_BASE_X + radius * np.cos(angle_rad)
         y_target = ARM_BASE_Y + radius * np.sin(angle_rad)
-        z_target = random.uniform(RANDOM_INIT_Z_MIN, RANDOM_INIT_Z_MAX)
+        # 🔥 使用V1专用Z轴参数：0.95~1.0米（正常初始化高度）
+        z_target = random.uniform(RANDOM_INIT_Z_MIN_V1, RANDOM_INIT_Z_MAX_V1)
         
-        print(f"🎲 Random Init (V1): pos=({x_target:.3f}, {y_target:.3f}, {z_target:.3f}), angle={angle_deg:.1f}°, radius={radius:.3f}m")
+        print(f"🎲 Random Init (V1): pos=({x_target:.3f}, {y_target:.3f}, {z_target:.3f}), angle={angle_deg:.1f}° (range: {RANDOM_INIT_ANGLE_MIN_V1}~{RANDOM_INIT_ANGLE_MAX_V1}°), radius={radius:.3f}m (range: {RANDOM_INIT_RADIUS_MIN_V1}~{RANDOM_INIT_RADIUS_MAX_V1}m), z_range: {RANDOM_INIT_Z_MIN_V1}~{RANDOM_INIT_Z_MAX_V1}m")
         
         return x_target, y_target, z_target
     
@@ -566,10 +595,10 @@ class SimpleEnv4:
         # 物体初始化
         self._init_objects_demo()
         
-        # 获取物体位置（与V2一致）
+        # 获取物体位置
         mug_red_init_pose, mug_blue_init_pose, plate_init_pose = self.get_obj_pose()
-        # 🔥 只保存红色杯子和盘子的位置（蓝色杯子已隐藏，与V2一致）
-        self.obj_init_pose = np.concatenate([mug_red_init_pose, plate_init_pose], dtype=np.float32)
+        # 🔥 保存红色杯子、蓝色杯子和盘子的位置
+        self.obj_init_pose = np.concatenate([mug_red_init_pose, mug_blue_init_pose, plate_init_pose], dtype=np.float32)
 
         for _ in range(100):
             self.step_env()
@@ -581,32 +610,59 @@ class SimpleEnv4:
         self.grab_image()
 
     def _init_objects_demo(self):
-        # ====== 与V2一致：使用红色杯子和盘子 ======
+        # ====== 使用红色杯子、蓝色杯子和盘子 ======
         
         # 设置盘子位置 (固定位置，与V2一致)
         plate_xyz = np.array([0.3, -0.25, 0.82])
         self.env.set_p_base_body(body_name='body_obj_plate_11', p=plate_xyz)
         self.env.set_R_base_body(body_name='body_obj_plate_11', R=np.eye(3,3))
         
-        # 🔥 红色杯子位置随机化（扇形区域，相对于机械臂基座，与V2一致）
-        # 1. 极坐标生成
-        r = random.uniform(MUG_MIN_DIST, MUG_MAX_DIST)  # 0.30 ~ 0.40m
-        theta = random.uniform(np.deg2rad(MUG_MIN_ANGLE), np.deg2rad(MUG_MAX_ANGLE))  # 0° ~ 45°
+        # 🔥 红色和蓝色杯子位置随机化（两个弧线段）
+        # 弧线段1：距离0.3m，角度0°-45°
+        # 弧线段2：距离0.4m，角度0°-30°
+        # 红色和蓝色杯子各随机初始化在一个弧线段上，确保间隔>=MUG_MIN_SPACING
         
-        # 2. 转换为笛卡尔坐标（相对于机械臂基座 ARM_BASE_X, ARM_BASE_Y）
-        mug_x = ARM_BASE_X + r * np.cos(theta)
-        mug_y = ARM_BASE_Y + r * np.sin(theta)
-        mug_z = TABLE_Z_HEIGHT
+        max_attempts = 100  # 最大尝试次数，确保找到满足间距要求的位置
         
-        # 3. 限制在桌面范围内（Clip，留点边缘余量）
-        mug_x = np.clip(mug_x, TABLE_X_MIN + 0.05, TABLE_X_MAX - 0.05)
-        mug_y = np.clip(mug_y, TABLE_Y_MIN + 0.05, TABLE_Y_MAX - 0.05)
+        # 🔥 固定分配：红色杯子在弧线段1（半径0.3m），蓝色杯子在弧线段2（半径0.4m）
+        for attempt in range(max_attempts):
+            # 红色杯子固定在弧线段1：距离0.3m，角度0°-45°
+            angle_red = np.deg2rad(random.uniform(MUG_ARC1_ANGLE_MIN, MUG_ARC1_ANGLE_MAX))
+            mug_red_pos = np.array([
+                ARM_BASE_X + MUG_ARC1_RADIUS * np.cos(angle_red),
+                ARM_BASE_Y + MUG_ARC1_RADIUS * np.sin(angle_red),
+                TABLE_Z_HEIGHT
+            ])
+            
+            # 蓝色杯子固定在弧线段2：距离0.4m，角度0°-30°
+            angle_blue = np.deg2rad(random.uniform(MUG_ARC2_ANGLE_MIN, MUG_ARC2_ANGLE_MAX))
+            mug_blue_pos = np.array([
+                ARM_BASE_X + MUG_ARC2_RADIUS * np.cos(angle_blue),
+                ARM_BASE_Y + MUG_ARC2_RADIUS * np.sin(angle_blue),
+                TABLE_Z_HEIGHT
+            ])
+            
+            # 检查间距是否满足要求
+            spacing = np.linalg.norm(mug_red_pos[:2] - mug_blue_pos[:2])
+            if spacing >= MUG_MIN_SPACING:
+                break  # 满足要求，退出循环
         
-        self.env.set_p_base_body(body_name='body_obj_mug_5', p=np.array([mug_x, mug_y, mug_z]))
+        # 如果所有尝试都不满足要求，使用最后一次尝试的结果（并打印警告）
+        if spacing < MUG_MIN_SPACING:
+            print(f"⚠️ Warning: Could not find positions with spacing >= {MUG_MIN_SPACING}m after {max_attempts} attempts. Using spacing={spacing:.3f}m")
+        
+        # 限制在桌面范围内（Clip，留点边缘余量）
+        mug_red_pos[0] = np.clip(mug_red_pos[0], TABLE_X_MIN + 0.05, TABLE_X_MAX - 0.05)
+        mug_red_pos[1] = np.clip(mug_red_pos[1], TABLE_Y_MIN + 0.05, TABLE_Y_MAX - 0.05)
+        mug_blue_pos[0] = np.clip(mug_blue_pos[0], TABLE_X_MIN + 0.05, TABLE_X_MAX - 0.05)
+        mug_blue_pos[1] = np.clip(mug_blue_pos[1], TABLE_Y_MIN + 0.05, TABLE_Y_MAX - 0.05)
+        
+        # 设置红色杯子位置
+        self.env.set_p_base_body(body_name='body_obj_mug_5', p=mug_red_pos)
         self.env.set_R_base_body(body_name='body_obj_mug_5', R=np.eye(3,3))
         
-        # 🔥 隐藏蓝色杯子和其他物体（移到远处，与V2一致）
-        self.env.set_p_base_body(body_name='body_obj_mug_6', p=np.array([HIDDEN_OBJ_X, 0.0, HIDDEN_OBJ_Z]))
+        # 设置蓝色杯子位置
+        self.env.set_p_base_body(body_name='body_obj_mug_6', p=mug_blue_pos)
         self.env.set_R_base_body(body_name='body_obj_mug_6', R=np.eye(3,3))
         
         # 隐藏其他杯子
@@ -627,18 +683,18 @@ class SimpleEnv4:
             pass  # 可能不存在红色方块
         
         # 记录桌上的物体信息（供 set_instruction 使用）
-        self.mugs_on_table = ['body_obj_mug_5']
-        self.mug_colors_on_table = {'body_obj_mug_5': 'red'}
+        self.mugs_on_table = ['body_obj_mug_5', 'body_obj_mug_6']
+        self.mug_colors_on_table = {'body_obj_mug_5': 'red', 'body_obj_mug_6': 'blue'}
 
     def set_instruction(self, given=None, task_type=None):
         """
-        设置任务指令（与V2一致：红色杯子放到盘子上）
+        设置任务指令（支持红色和蓝色杯子）
         
         Parameters:
             given: 手动指定的指令文本
             task_type: 任务类型，可选值:
                 - 'nav': 导航任务 (小车移动)
-                - 'arm': 机械臂任务 (红色杯子放到盘子上，与V2一致)
+                - 'arm': 机械臂任务 (红色或蓝色杯子放到盘子上)
                 - None: 自动根据 control_mode 决定
         """
         # 保存任务类型
@@ -662,23 +718,135 @@ class SimpleEnv4:
                 self.current_nav_instruction = self.instruction
                 
             else:
-                # Arm 模式：与V2一致，红色杯子放到盘子上
+                # Arm 模式：随机选择红色或蓝色杯子
                 self.task_type = 'arm'
-                self.instruction = ARM_INSTRUCTION  # "Place the red mug on the plate."
-                self.obj_target = 'body_obj_mug_5'
-                self.target_color = 'red'
+                
+                # 🔥 如果启用了选择偏转角度更小的杯子模式
+                if self.select_smaller_angle_mug:
+                    try:
+                        # 获取两个杯子的位置
+                        red_mug_pos = self.env.get_p_body('body_obj_mug_5')
+                        blue_mug_pos = self.env.get_p_body('body_obj_mug_6')
+                        
+                        # 🔥 只计算偏转角度，不计算距离
+                        # 计算相对于机械臂基座的位置向量（仅用于计算角度）
+                        red_rel_pos = red_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
+                        blue_rel_pos = blue_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
+                        
+                        # 🔥 计算偏转角度（弧度），使用 atan2(y, x)
+                        # atan2 返回从 x 轴正方向（正前方）到点 (x,y) 的角度
+                        # 范围 [-π, π]，0 表示正前方，正值表示右侧，负值表示左侧
+                        red_angle = np.arctan2(red_rel_pos[1], red_rel_pos[0])
+                        blue_angle = np.arctan2(blue_rel_pos[1], blue_rel_pos[0])
+                        
+                        # 🔥 只比较角度绝对值，选择更接近正前方（角度更小）的杯子
+                        # 注意：这里只比较角度，不比较距离
+                        red_angle_abs = abs(red_angle)
+                        blue_angle_abs = abs(blue_angle)
+                        
+                        if red_angle_abs <= blue_angle_abs:
+                            # 红色杯子角度更小（更接近正前方）
+                            self.obj_target = 'body_obj_mug_5'
+                            self.target_color = 'red'
+                            self.instruction = "Place the red mug on the plate."
+                        else:
+                            # 蓝色杯子角度更小（更接近正前方）
+                            self.obj_target = 'body_obj_mug_6'
+                            self.target_color = 'blue'
+                            self.instruction = "Place the blue mug on the plate."
+                    except Exception as e:
+                        # 如果获取位置失败，回退到随机选择
+                        print(f"⚠️ Warning: Failed to get mug positions for angle selection: {e}. Falling back to random selection.")
+                        self.instruction = random.choice(ARM_INSTRUCTIONS)
+                        if 'red' in self.instruction.lower():
+                            self.obj_target = 'body_obj_mug_5'
+                            self.target_color = 'red'
+                        elif 'blue' in self.instruction.lower():
+                            self.obj_target = 'body_obj_mug_6'
+                            self.target_color = 'blue'
+                        else:
+                            self.obj_target = 'body_obj_mug_5'
+                            self.target_color = 'red'
+                else:
+                    # 默认：随机选择
+                    self.instruction = random.choice(ARM_INSTRUCTIONS)
+                    # 根据指令内容确定目标物体
+                    if 'red' in self.instruction.lower():
+                        self.obj_target = 'body_obj_mug_5'
+                        self.target_color = 'red'
+                    elif 'blue' in self.instruction.lower():
+                        self.obj_target = 'body_obj_mug_6'
+                        self.target_color = 'blue'
+                    else:
+                        # 默认使用红色杯子
+                        self.obj_target = 'body_obj_mug_5'
+                        self.target_color = 'red'
+                        print(f"⚠️ Warning: Instruction does not contain 'red' or 'blue'. Using red mug as default.")
         else:
             self.instruction = given
-            # 解析 obj_target 和 target_color (与V2一致，只支持红色杯子)
+            # 解析 obj_target 和 target_color (支持红色和蓝色杯子)
             if self.control_mode == 'arm' or self.task_type == 'arm':
-                if 'red' in self.instruction.lower():
-                    self.obj_target = 'body_obj_mug_5'
-                    self.target_color = 'red'
+                # 🔥 如果启用了选择偏转角度更小的杯子模式，忽略指令中的颜色，直接选择角度更小的
+                if self.select_smaller_angle_mug:
+                    try:
+                        # 获取两个杯子的位置
+                        red_mug_pos = self.env.get_p_body('body_obj_mug_5')
+                        blue_mug_pos = self.env.get_p_body('body_obj_mug_6')
+                        
+                        # 🔥 只计算偏转角度，不计算距离
+                        # 计算相对于机械臂基座的位置向量（仅用于计算角度）
+                        red_rel_pos = red_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
+                        blue_rel_pos = blue_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
+                        
+                        # 🔥 计算偏转角度（弧度），使用 atan2(y, x)
+                        # atan2 返回从 x 轴正方向（正前方）到点 (x,y) 的角度
+                        # 范围 [-π, π]，0 表示正前方，正值表示右侧，负值表示左侧
+                        red_angle = np.arctan2(red_rel_pos[1], red_rel_pos[0])
+                        blue_angle = np.arctan2(blue_rel_pos[1], blue_rel_pos[0])
+                        
+                        # 🔥 只比较角度绝对值，选择更接近正前方（角度更小）的杯子
+                        # 注意：这里只比较角度，不比较距离
+                        red_angle_abs = abs(red_angle)
+                        blue_angle_abs = abs(blue_angle)
+                        
+                        if red_angle_abs <= blue_angle_abs:
+                            # 红色杯子角度更小（更接近正前方）
+                            self.obj_target = 'body_obj_mug_5'
+                            self.target_color = 'red'
+                            # 更新指令文本以匹配选择
+                            self.instruction = "Place the red mug on the plate."
+                        else:
+                            # 蓝色杯子角度更小（更接近正前方）
+                            self.obj_target = 'body_obj_mug_6'
+                            self.target_color = 'blue'
+                            # 更新指令文本以匹配选择
+                            self.instruction = "Place the blue mug on the plate."
+                    except Exception as e:
+                        # 如果获取位置失败，回退到按指令解析
+                        print(f"⚠️ Warning: Failed to get mug positions for angle selection: {e}. Falling back to instruction parsing.")
+                        if 'red' in self.instruction.lower():
+                            self.obj_target = 'body_obj_mug_5'
+                            self.target_color = 'red'
+                        elif 'blue' in self.instruction.lower():
+                            self.obj_target = 'body_obj_mug_6'
+                            self.target_color = 'blue'
+                        else:
+                            self.obj_target = 'body_obj_mug_5'
+                            self.target_color = 'red'
+                            print(f"⚠️ Warning: Instruction does not contain 'red' or 'blue'. Using red mug as default.")
                 else:
-                    # 默认使用红色杯子
-                    self.obj_target = 'body_obj_mug_5'
-                    self.target_color = 'red'
-                    print(f"⚠️ Warning: Instruction does not contain 'red'. Using red mug as default.")
+                    # 默认：按指令内容解析
+                    if 'red' in self.instruction.lower():
+                        self.obj_target = 'body_obj_mug_5'
+                        self.target_color = 'red'
+                    elif 'blue' in self.instruction.lower():
+                        self.obj_target = 'body_obj_mug_6'
+                        self.target_color = 'blue'
+                    else:
+                        # 默认使用红色杯子
+                        self.obj_target = 'body_obj_mug_5'
+                        self.target_color = 'red'
+                        print(f"⚠️ Warning: Instruction does not contain 'red' or 'blue'. Using red mug as default.")
             elif self.control_mode == 'base':
                 self.current_nav_instruction = given
 
@@ -1323,7 +1491,8 @@ class SimpleEnv4:
         hover_z_display = f"{hover_pos[2]:.2f}" if EXPERT_FUNNEL_HOVER_Z is not None else f"z_travel({z_travel:.2f})"
         
         print(f"🤖 Expert trajectory generated: {len(trajectory)} steps")
-        print(f"   Target object: {self.obj_target} (red mug) -> Plate")
+        color_name = self.target_color if hasattr(self, 'target_color') else 'unknown'
+        print(f"   Target object: {self.obj_target} ({color_name} mug) -> Plate")
         print(f"   🔥 Y-axis grasp offset: {y_grasp_offset*1000:.1f}mm (用于抓取杯子把手)")
         print(f"   🔥 Funnel Approach: hover (grasp center, z={hover_z_display}, r={EXPERT_FUNNEL_HOVER_RADIUS*100:.1f}cm) -> mid (grasp center, z={EXPERT_FUNNEL_MID_Z:.2f}, r={EXPERT_FUNNEL_MID_RADIUS*100:.1f}cm) -> grasp")
         print(f"   Grasp center: ({grasp_center_xy[0]:.3f}, {grasp_center_xy[1]:.3f}) [Y偏移: {y_grasp_offset*1000:.1f}mm]")
@@ -1591,20 +1760,23 @@ class SimpleEnv4:
 
     def check_success(self):
         """
-        V4 版本成功判定（与V2一致）：红色杯子放到盘子上
+        成功判定：目标杯子（红色或蓝色）放到盘子上
+        判定条件：
+        1. 杯子的XY坐标在盘子范围内（XY距离 < 0.1m）
+        2. 夹爪已松开（gripper < 0.1）
+        3. 机械臂已撤离（TCP Z > 0.9m）
         """
         if not hasattr(self, 'obj_target'):
             return False
             
         p_mug = self.env.get_p_body(self.obj_target)
         
-        # 判断红色杯子是否在盘子上（与V2一致）
+        # 判断目标杯子是否在盘子上
         try:
             p_plate = self.env.get_p_body('body_obj_plate_11')
-            # 盘子范围：xy 距离 < 0.1m，z 高度在盘子面附近 (±0.6m)
+            # 🔥 只检查XY坐标是否在盘子范围内（移除Z高度差检查）
             xy_dist = np.linalg.norm(p_mug[:2] - p_plate[:2])
-            z_diff = abs(p_mug[2] - p_plate[2])
-            if xy_dist < 0.1 and z_diff < 0.6:
+            if xy_dist < 0.1:
                 # 夹爪已松开
                 gripper = self.env.get_qpos_joint('rh_r1')
                 if gripper < 0.1:
@@ -1618,16 +1790,15 @@ class SimpleEnv4:
 
     def get_obj_pose(self):
         """
-        获取物体位置（与V2一致：返回红色杯子和盘子的位置）
+        获取物体位置（返回红色杯子、蓝色杯子和盘子的位置）
         Returns:
             p_mug_red: np.array, position of the red mug
-            p_mug_blue: np.array, position of the blue mug (零向量，已隐藏)
+            p_mug_blue: np.array, position of the blue mug
             p_plate: np.array, position of the plate
         """
         p_mug_red = self.env.get_p_body('body_obj_mug_5')
+        p_mug_blue = self.env.get_p_body('body_obj_mug_6')
         p_plate = self.env.get_p_body('body_obj_plate_11')
-        # 🔥 为了保持兼容性，返回三个位置（蓝色杯子已隐藏，返回零向量）
-        p_mug_blue = np.zeros(3)
         return p_mug_red, p_mug_blue, p_plate
     
     def grab_image(self):
@@ -1756,7 +1927,7 @@ class SimpleEnv4:
         
         # V4 新增：显示桌上物体的XYZ坐标 (左下角)
         try:
-            # 只显示桌上存在的物体（与V2一致，只有红色杯子）
+            # 显示桌上存在的物体（红色杯子和蓝色杯子）
             if hasattr(self, 'mug_colors_on_table') and len(self.mug_colors_on_table) > 0:
                 mug_texts = []
                 color_names = {'red': 'Red', 'blue': 'Blue', 'yellow': 'Yellow', 'green': 'Green'}
