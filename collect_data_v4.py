@@ -17,11 +17,11 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 # --- 🔥 随机初始化开关 (Random Initialization Switch) ---
 # ⚠️ 注意：这些参数现在作为默认值，实际值由 MULTI_CONFIG_RECORDING 中的配置覆盖
-RANDOM_INIT_ENABLED = 1            # 0: 关闭, 1: 旧版(扇形区域), 2: 新版(圆形交集，仅简单模式)
+RANDOM_INIT_ENABLED = 0            # 0: 关闭, 1: 旧版(扇形区域), 2: 新版(圆形交集，仅简单模式)
 RANDOM_INIT_GRIPPER_OPEN = True    # True: 初始化时夹爪张开, False: 初始化时夹爪闭合
 
 # --- 🔥 杯子选择模式开关 (Mug Selection Mode Switch) ---
-SELECT_SMALLER_ANGLE_MUG = True   # True: 总是选择偏转角度更小的杯子, False: 随机选择
+SELECT_SMALLER_ANGLE_MUG = False   # True: 总是选择偏转角度更小的杯子, False: 随机选择
 
 # --- 🤖 多配置自动录制 [P键] ---
 # 🔥 定义多个配置，按顺序自动录制

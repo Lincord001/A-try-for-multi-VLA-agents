@@ -38,7 +38,7 @@ EXPERT_Z_NOISE = 0.005               # Z轴高度微小随机噪声 (Z height no
 
 # --- 🔥 漏斗移动逻辑参数 (Funnel Approach Parameters) ---
 # 🔥 悬停点和中间点的圆半径参数（用于漏斗式接近策略，方便调参）
-EXPERT_FUNNEL_HOVER_RADIUS = 0.03   # 悬停点圆半径（米）(Hover point circle radius, 3cm)
+EXPERT_FUNNEL_HOVER_RADIUS = 0.02   # 悬停点圆半径（米）(Hover point circle radius, 3cm)
 EXPERT_FUNNEL_MID_RADIUS = 0.01     # 中间点圆半径（米）(Mid point circle radius, 1cm)
 # 🔥 悬停点和中间点的Z坐标参数（圆心高度）
 EXPERT_FUNNEL_HOVER_Z = None        # 悬停点Z坐标（米），None=使用巡航高度z_travel
@@ -52,7 +52,8 @@ EXPERT_TREMOR_SMOOTHNESS = 0.7        # 抖动平滑度 (0-1，越大越平滑) 
 # --- 🔥 动态步数参数（基于距离计算，提高数据多样性）---
 # 末端执行器速度参数（米/步），用于根据距离动态计算步数
 # 🔥 V4.1: 速度减半，使单条数据集时长变为原来的2倍
-EXPERT_SPEED_APPROACH = 0.008        # 接近阶段速度 (Approach speed, m/step) - 原0.012减半
+EXPERT_SPEED_APPROACH = 0.006        # 接近阶段速度 (Approach speed, m/step) - 原0.012减半
+EXPERT_SPEED_APPROACH_SMALLER_ANGLE = 0.004  # 🔥 角度较小的杯子接近阶段速度 (Approach speed for smaller angle mug, m/step)
 EXPERT_SPEED_DESCEND = 0.005         # 下降阶段速度 (Descend speed, m/step) - 原0.010减半
 EXPERT_SPEED_LIFT = 0.006            # 提升阶段速度 (Lift speed, m/step) - 原0.008减半
 EXPERT_SPEED_TRANSPORT = 0.008       # 运输阶段速度 (Transport speed, m/step) - 原0.008减半
@@ -1272,20 +1273,10 @@ class SimpleEnv4:
         # 随机生成巡航高度
         z_travel = EXPERT_Z_TRAVEL_BASE + np.random.uniform(-EXPERT_Z_TRAVEL_NOISE, EXPERT_Z_TRAVEL_NOISE)
         
-        # 🔥 动态调整悬停点高度（根据初始化夹爪位置）
-        # 计算默认悬停点高度
-        default_hover_z = EXPERT_FUNNEL_HOVER_Z if EXPERT_FUNNEL_HOVER_Z is not None else z_travel
-        
-        # 计算悬停点和中间点的中点高度
-        hover_mid_z = (default_hover_z + EXPERT_FUNNEL_MID_Z) / 2.0
-        
-        # 检查条件：当前高度低于悬停点但高于中点
-        if current_pos[2] < default_hover_z and current_pos[2] > hover_mid_z:
-            # 将悬停点高度调整为当前夹爪高度
-            adjusted_hover_z = current_pos[2]
-            print(f"   🔧 Adjusted hover Z: {default_hover_z:.3f}m -> {adjusted_hover_z:.3f}m (current_pos[2]={current_pos[2]:.3f}m, mid_point={hover_mid_z:.3f}m)")
-        else:
-            adjusted_hover_z = default_hover_z
+        # 🔥 强制分阶段运动：接近阶段始终先 XY 对齐，再进行后续下降
+        # 做法：悬停点 Z 固定为 lift_end_pos 的 Z，保证 lift_end_pos -> hover_pos 为恒定 Z 的平面移动
+        # NOTE: z_travel 仍用于后续运输与放置阶段
+        adjusted_hover_z = lift_end_pos[2]
         
         # 🔥 漏斗移动逻辑：两个圆的圆心都使用抓取中心点（X物体, Y物体+offset），即抓取点的目标位置（不含噪声）
         # 🔥 杯子抓取：使用Y轴偏移抓取杯子把手（与V2一致）
@@ -1302,7 +1293,7 @@ class SimpleEnv4:
         
         # 🔥 漏斗移动逻辑：悬停点在物体上方，以抓取中心点 (grasp_center_xy) 为中心、半径可调的圆内随机
         hover_xy = self.sample_point_in_circle(grasp_center_xy, radius=EXPERT_FUNNEL_HOVER_RADIUS)
-        # 🔥 使用调整后的悬停点高度（动态调整逻辑已在上方完成）
+        # 🔥 悬停点 Z 与 lift_end_pos 一致，保证第一段接近只在 XY 平面运动
         hover_pos = np.array([
             hover_xy[0],
             hover_xy[1],
@@ -1340,8 +1331,39 @@ class SimpleEnv4:
         retract_pos = np.array([place_pos[0], place_pos[1], EXPERT_RETRACT_HEIGHT])
         
         # 🔥 移除路径选择逻辑：始终使用漏斗路径（悬停点 -> 中间点 -> 抓取点）
+        # 🔥 检查选中的杯子是否是角度较小的那一个，如果是则使用更快的接近速度
+        approach_speed = EXPERT_SPEED_APPROACH  # 默认接近速度
+        try:
+            # 获取两个杯子的位置
+            red_mug_pos = self.env.get_p_body('body_obj_mug_5')
+            blue_mug_pos = self.env.get_p_body('body_obj_mug_6')
+            
+            # 计算相对于机械臂基座的位置向量（仅用于计算角度）
+            red_rel_pos = red_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
+            blue_rel_pos = blue_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
+            
+            # 计算偏转角度（弧度），使用 atan2(y, x)
+            red_angle = np.arctan2(red_rel_pos[1], red_rel_pos[0])
+            blue_angle = np.arctan2(blue_rel_pos[1], blue_rel_pos[0])
+            
+            # 只比较角度绝对值，选择更接近正前方（角度更小）的杯子
+            red_angle_abs = abs(red_angle)
+            blue_angle_abs = abs(blue_angle)
+            
+            # 判断哪个杯子角度更小
+            smaller_angle_mug = 'red' if red_angle_abs <= blue_angle_abs else 'blue'
+            
+            # 检查选中的杯子是否是角度较小的那一个
+            if hasattr(self, 'target_color') and self.target_color == smaller_angle_mug:
+                # 选中的是角度较小的杯子，使用更快的接近速度
+                approach_speed = EXPERT_SPEED_APPROACH_SMALLER_ANGLE
+                print(f"   ⚡ Selected mug ({self.target_color}) is the smaller angle mug. Using faster approach speed: {approach_speed:.3f} m/step")
+        except Exception as e:
+            # 如果获取位置失败，使用默认速度
+            print(f"   ⚠️ Warning: Failed to check mug angles for speed adjustment: {e}. Using default approach speed.")
+        
         # 计算各阶段步数
-        approach_steps = self.distance_based_steps(lift_end_pos, hover_pos, EXPERT_SPEED_APPROACH)
+        approach_steps = self.distance_based_steps(lift_end_pos, hover_pos, approach_speed)
         descend_steps_1 = self.distance_based_steps(hover_pos, mid_pos, EXPERT_SPEED_DESCEND)
         descend_steps_2 = self.distance_based_steps(mid_pos, grasp_pos, EXPERT_SPEED_DESCEND)
         
