@@ -23,13 +23,13 @@ NAV_INSTRUCTIONS = [
 ]
 
 class SimpleEnv3:
-    def __init__(self, xml_path, action_type='eef_pose', state_type='joint_angle', seed=None):
+    def __init__(self, xml_path, action_type='eef_pose', state_type='joint_angle', seed=None, init_mode='arm'):
         self.env = MuJoCoParserClass(name='Tabletop', rel_xml_path=xml_path)
         self.action_type = action_type
         self.state_type = state_type
         self.joint_names = ['joint1','joint2','joint3','joint4','joint5','joint6']
         
-        # 默认模式
+        # 默认模式（可由 init_mode 覆盖）
         self.control_mode = 'arm' 
         
         # 内部状态
@@ -40,7 +40,8 @@ class SimpleEnv3:
         self.current_nav_instruction = None
 
         self.init_viewer()
-        self.reset(seed)
+        # 启动阶段只执行一次 reset，避免 main 中再次 reset 导致初始化变慢。
+        self.reset(seed=seed, mode=init_mode)
 
     def init_viewer(self):
         self.env.reset()
@@ -313,11 +314,10 @@ class SimpleEnv3:
         # 初始化返回字典
         images = {}
 
-        # 1. 获取 Agent View (作为 Arm 模式的默认或 Fallback)
-        rgb_agent_raw = self.env.get_fixed_cam_rgb(cam_name='agentview')
-
         if self.control_mode == 'arm':
             # === 机械臂模式 ===
+            # Arm 模式需要 agentview 作为主相机
+            rgb_agent_raw = self.env.get_fixed_cam_rgb(cam_name='agentview')
             self.rgb_agent = rgb_agent_raw 
             self.rgb_ego = self.env.get_fixed_cam_rgb(cam_name='egocentric') 
             
@@ -348,6 +348,7 @@ class SimpleEnv3:
             except Exception as e:
                 print(f"Error grabbing TB3 cameras: {e}")
                 # Fallback 防止报错
+                rgb_agent_raw = self.env.get_fixed_cam_rgb(cam_name='agentview')
                 self.rgb_front = rgb_agent_raw
                 self.rgb_left = rgb_agent_raw
                 self.rgb_right = rgb_agent_raw

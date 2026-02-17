@@ -8,6 +8,7 @@
 2. 仅统计指令要求抓取的杯子位置（红/蓝分别统计）
 3. 可视化分布情况（包括对比图）
 4. 统计抓取中心（Y + offset）的分布
+5. 统计并可视化小车初始位姿（base_pose）
 """
 
 import os
@@ -51,11 +52,14 @@ def load_episode_data(episode_path):
         if len(df) > 0:
             obj_init = df['obj_init'].iloc[0]
             task = None
+            base_pose = None
             if 'task' in df.columns:
                 task = df['task'].iloc[0]
             elif 'instruction' in df.columns:
                 task = df['instruction'].iloc[0]
-            return obj_init, task
+            if 'base_pose' in df.columns:
+                base_pose = df['base_pose'].iloc[0]
+            return obj_init, task, base_pose
         return None
     except Exception as e:
         print(f"Error loading {episode_path}: {e}")
@@ -95,6 +99,7 @@ def analyze_cup_positions():
         'yellow': {'x': [], 'y': [], 'z': []},
         'green': {'x': [], 'y': [], 'z': []},
     }
+    base_positions = {'x': [], 'y': [], 'yaw': []}
     grasp_center_y = []  # 抓取中心的 Y 坐标（杯子 Y + offset）
     
     failed_count = 0
@@ -109,7 +114,13 @@ def analyze_cup_positions():
         if result is None:
             failed_count += 1
             continue
-        obj_init, task_from_data = result
+        obj_init, task_from_data, base_pose = result
+
+        # base_pose 格式通常为 [x, y, yaw]
+        if base_pose is not None and len(base_pose) >= 3:
+            base_positions['x'].append(base_pose[0])
+            base_positions['y'].append(base_pose[1])
+            base_positions['yaw'].append(base_pose[2])
 
         # 从文件名解析 episode_index，例如 episode_000123.parquet
         try:
@@ -159,10 +170,12 @@ def analyze_cup_positions():
     red_count = len(cup_positions['red']['x'])
     blue_count = len(cup_positions['blue']['x'])
     total_target_count = red_count + blue_count
+    base_count = len(base_positions['x'])
     print(f"\n📊 Data Summary (Target Cups Only):")
     print(f"   🔴 Red cup target count: {red_count}")
     print(f"   🔵 Blue cup target count: {blue_count}")
     print(f"   📈 Total target cups: {total_target_count}")
+    print(f"   🚗 Base pose count: {base_count}")
     if red_count != 250 or blue_count != 250:
         print(f"   ⚠️  Expected ~250 per cup. Current: red={red_count}, blue={blue_count}")
     if unknown_target_count > 0:
@@ -185,6 +198,9 @@ def analyze_cup_positions():
     blue_y = np.array(cup_positions['blue']['y']) if blue_count > 0 else np.array([])
     blue_x = np.array(cup_positions['blue']['x']) if blue_count > 0 else np.array([])
     blue_z = np.array(cup_positions['blue']['z']) if blue_count > 0 else np.array([])
+    base_x = np.array(base_positions['x']) if base_count > 0 else np.array([])
+    base_y = np.array(base_positions['y']) if base_count > 0 else np.array([])
+    base_yaw = np.array(base_positions['yaw']) if base_count > 0 else np.array([])
     
     if red_count > 0:
         print(f"\n🔴 Red Cup (mug_5) Position Statistics (Target Only):")
@@ -201,6 +217,12 @@ def analyze_cup_positions():
     if len(grasp_y) > 0:
         print(f"\n🎯 Grasp Center Y (Target Cup Y + {EXPERT_Y_GRASP_OFFSET:.3f}m):")
         print(f"   mean={grasp_y.mean():.4f}, std={grasp_y.std():.4f}, range=[{grasp_y.min():.4f}, {grasp_y.max():.4f}]")
+
+    if base_count > 0:
+        print(f"\n🚗 Base Initial Pose Statistics:")
+        print(f"   X: mean={base_x.mean():.4f}, std={base_x.std():.4f}, range=[{base_x.min():.4f}, {base_x.max():.4f}]")
+        print(f"   Y: mean={base_y.mean():.4f}, std={base_y.std():.4f}, range=[{base_y.min():.4f}, {base_y.max():.4f}]")
+        print(f"   Yaw: mean={base_yaw.mean():.4f}, std={base_yaw.std():.4f}, range=[{base_yaw.min():.4f}, {base_yaw.max():.4f}]")
     
     # 检查分布是否均匀
     # 计算偏度（skewness）
@@ -511,6 +533,55 @@ def analyze_cup_positions():
     output_path = output_dir / 'cup_position_analysis.png'
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"\n✅ Visualization saved to: {output_path}")
+
+    # 额外保存小车初始坐标可视化
+    if base_count > 0:
+        fig_base = plt.figure(figsize=(14, 10))
+
+        plt.subplot(2, 2, 1)
+        plt.hist(base_x, bins=30, alpha=0.7, color='purple', edgecolor='black')
+        plt.axvline(base_x.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {base_x.mean():.3f}')
+        plt.axvline(np.median(base_x), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(base_x):.3f}')
+        plt.xlabel('Base X Position (m)')
+        plt.ylabel('Count')
+        plt.title('🚗 Base Initial X Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        plt.subplot(2, 2, 2)
+        plt.hist(base_y, bins=30, alpha=0.7, color='teal', edgecolor='black')
+        plt.axvline(base_y.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {base_y.mean():.3f}')
+        plt.axvline(np.median(base_y), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(base_y):.3f}')
+        plt.xlabel('Base Y Position (m)')
+        plt.ylabel('Count')
+        plt.title('🚗 Base Initial Y Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        plt.subplot(2, 2, 3)
+        plt.hist(base_yaw, bins=30, alpha=0.7, color='orange', edgecolor='black')
+        plt.axvline(base_yaw.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {base_yaw.mean():.3f}')
+        plt.axvline(np.median(base_yaw), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(base_yaw):.3f}')
+        plt.xlabel('Base Yaw (rad)')
+        plt.ylabel('Count')
+        plt.title('🚗 Base Initial Yaw Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        plt.subplot(2, 2, 4)
+        plt.scatter(base_x, base_y, alpha=0.5, s=20, color='purple')
+        plt.xlabel('Base X Position (m)')
+        plt.ylabel('Base Y Position (m)')
+        plt.title('🚗 Base Initial X-Y Scatter')
+        plt.grid(True, alpha=0.3)
+        plt.axis('equal')
+
+        plt.tight_layout()
+        base_output_path = output_dir / 'base_position_analysis.png'
+        plt.savefig(base_output_path, dpi=150, bbox_inches='tight')
+        print(f"✅ Base visualization saved to: {base_output_path}")
+    else:
+        print("⚠️  base_pose not found in dataset. Skip base visualization.")
     
     # 5. 保存统计结果到 JSON
     stats_dict = {
@@ -518,6 +589,7 @@ def analyze_cup_positions():
         'red_cup_target_count': red_target_count,
         'blue_cup_target_count': blue_target_count,
         'unknown_target_count': unknown_target_count,
+        'base_pose_count': base_count,
     }
     
     if red_count > 0:
@@ -550,6 +622,28 @@ def analyze_cup_positions():
             'std': float(grasp_y.std()),
             'min': float(grasp_y.min()),
             'max': float(grasp_y.max()),
+        }
+
+    if base_count > 0:
+        stats_dict['base_pose'] = {
+            'x': {
+                'mean': float(base_x.mean()),
+                'std': float(base_x.std()),
+                'min': float(base_x.min()),
+                'max': float(base_x.max()),
+            },
+            'y': {
+                'mean': float(base_y.mean()),
+                'std': float(base_y.std()),
+                'min': float(base_y.min()),
+                'max': float(base_y.max()),
+            },
+            'yaw': {
+                'mean': float(base_yaw.mean()),
+                'std': float(base_yaw.std()),
+                'min': float(base_yaw.min()),
+                'max': float(base_yaw.max()),
+            },
         }
     
     # 如果有蓝色杯子数据，添加到统计中
@@ -622,6 +716,11 @@ def analyze_cup_positions():
             print(f"   Red cup center: ({red_center[0]:.3f}, {red_center[1]:.3f})")
             print(f"   Blue cup center: ({blue_center[0]:.3f}, {blue_center[1]:.3f})")
             print(f"   Distance between centers: {distance_between:.3f}m")
+
+    if base_count > 0:
+        if base_x.std() < 0.05 and base_y.std() < 0.05:
+            print("⚠️  WARNING (Base): Base initial XY variance is very small.")
+            print("   Mobile base start positions may lack diversity.")
     
     print("\n" + "="*70)
     print("✅ Analysis Complete!")

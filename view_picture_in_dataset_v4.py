@@ -7,30 +7,113 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import TextBox
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
-def natural_sort_key(s):
-    """用于文件名的自然排序 (让 2.jpg 排在 10.jpg 前面)"""
-    import re
-    return [int(text) if text.isdigit() else text.lower()
-            for text in re.split('([0-9]+)', s)]
+# ================= 配置区域 =================
+# 支持 mode + version 选择，和 visualize_dataset.py 保持一致风格
+DATASET_CONFIG = {
+    "base": {
+        "v4": {
+            "repo_name": "demo_data_base_v4",
+            "root": "./demo_data_base_v4",
+            "image_keys": ["front", "left", "right"],
+        },
+        "v6": {
+            "repo_name": "omy_base_data_v6",
+            "root": "./demo_data_base_v6",
+            "image_keys": ["front", "left", "right"],
+        },
+    },
+    "arm": {
+        "v5": {
+            "repo_name": "demo_data_arm_v5",
+            "root": "./demo_data_arm_v5",
+            "image_keys": ["agent", "wrist"],
+        },
+        "v5_3": {
+            "repo_name": "omy_arm_data_v5_3",
+            "root": "./demo_data_arm_v5_3",
+            "image_keys": ["agent", "wrist"],
+        },
+        "v6": {
+            "repo_name": "omy_arm_data_v6",
+            "root": "./demo_data_arm_v6",
+            "image_keys": ["agent", "wrist"],
+        },
+    },
+}
+
+
+def resolve_dataset_path(mode, version, data_dir):
+    """优先使用 data_dir；否则按 mode/version 从配置中解析路径。"""
+    if data_dir:
+        return data_dir, None
+
+    mode_cfg = DATASET_CONFIG.get(mode)
+    if mode_cfg is None:
+        raise ValueError(f"Unsupported mode '{mode}'. Available: {list(DATASET_CONFIG.keys())}")
+
+    ver_cfg = mode_cfg.get(version)
+    if ver_cfg is None:
+        raise ValueError(
+            f"Unsupported version '{version}' for mode '{mode}'. Available: {list(mode_cfg.keys())}"
+        )
+    return ver_cfg["root"], ver_cfg["repo_name"]
+
+
+def build_repo_candidates(data_dir, mode=None, version=None, repo_name=None):
+    """构建多个候选 repo_name，逐个尝试加载以兼容不同历史数据集。"""
+    candidates = []
+
+    if repo_name:
+        candidates.append(repo_name)
+
+    base = os.path.basename(os.path.abspath(data_dir))
+    if base:
+        candidates.append(base)
+        if base.startswith("demo_data_"):
+            candidates.append(base.replace("demo_data_", "omy_", 1))
+
+    if mode in DATASET_CONFIG and version in DATASET_CONFIG[mode]:
+        preferred = DATASET_CONFIG[mode][version]["repo_name"]
+        candidates.insert(0, preferred)
+
+    # 去重并保持顺序
+    uniq = []
+    for name in candidates:
+        if name and name not in uniq:
+            uniq.append(name)
+    return uniq
 
 class DatasetViewer:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, mode="arm", version="v6", repo_name=None):
         self.data_dir = data_dir
         if not os.path.exists(data_dir):
             print(f"❌ 错误: 找不到文件夹 '{data_dir}'")
             sys.exit(1)
+        
+        repo_candidates = build_repo_candidates(
+            data_dir=data_dir, mode=mode, version=version, repo_name=repo_name
+        )
 
-        # 从数据目录提取 repo_name (例如: demo_data_arm_v4 -> demo_data_arm_v4)
-        self.repo_name = os.path.basename(os.path.abspath(data_dir))
-        
-        print(f"📂 加载数据集: {self.repo_name}")
+        self.repo_name = None
         print(f"📁 数据路径: {data_dir}")
-        
-        try:
-            self.dataset = LeRobotDataset(self.repo_name, root=data_dir)
-        except Exception as e:
-            print(f"❌ 错误: 无法加载数据集: {e}")
+        print(f"🔍 尝试 repo_name 候选: {repo_candidates}")
+
+        load_err = None
+        self.dataset = None
+        for candidate in repo_candidates:
+            try:
+                self.dataset = LeRobotDataset(candidate, root=data_dir)
+                self.repo_name = candidate
+                break
+            except Exception as e:
+                load_err = e
+
+        if self.dataset is None:
+            print(f"❌ 错误: 无法加载数据集。最后一次错误: {load_err}")
+            print("   你可以手动指定 --repo_name 再试一次。")
             sys.exit(1)
+
+        print(f"📂 加载数据集: {self.repo_name}")
         
         self.num_episodes = self.dataset.num_episodes
         self.episode_data_index = self.dataset.episode_data_index
@@ -46,8 +129,10 @@ class DatasetViewer:
                     self.image_keys.append(cam_name)
             self.image_keys.sort()  # 排序以保持一致性
         else:
-            # 如果数据集为空，使用默认值（匹配 collect_data_v4.py 的 arm 模式）
-            self.image_keys = ['agent', 'wrist']
+            # 如果数据集为空，回退到配置里的默认相机
+            mode_cfg = DATASET_CONFIG.get(mode, {})
+            ver_cfg = mode_cfg.get(version, {})
+            self.image_keys = ver_cfg.get("image_keys", ['agent', 'wrist'])
         
         print(f"✅ 数据集加载成功: {self.num_episodes} 个 Episodes, {len(self.dataset)} 帧")
         print(f"📷 检测到相机: {self.image_keys}")
@@ -306,9 +391,44 @@ class DatasetViewer:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="查看采集到的机器人数据集 (LeRobot 格式)")
-    parser.add_argument('--data_dir', type=str, default='./demo_data_arm_v5', 
-                        help="数据集根目录路径 (默认: ./demo_data_arm_v2)")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="arm",
+        choices=list(DATASET_CONFIG.keys()),
+        help="数据模式: arm 或 base (默认: arm)",
+    )
+    parser.add_argument(
+        "--version",
+        type=str,
+        default="v6",
+        help="数据集版本 (例如: arm 的 v5/v5_3/v6，base 的 v4/v6)",
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=None,
+        help="数据集根目录路径；若不填则按 mode/version 自动解析",
+    )
+    parser.add_argument(
+        "--repo_name",
+        type=str,
+        default=None,
+        help="可选：手动指定 LeRobotDataset 的 repo_name（加载失败时可用）",
+    )
     args = parser.parse_args()
-    
-    viewer = DatasetViewer(args.data_dir)
+
+    try:
+        data_dir, resolved_repo_name = resolve_dataset_path(args.mode, args.version, args.data_dir)
+    except ValueError as e:
+        print(f"❌ 配置错误: {e}")
+        sys.exit(1)
+
+    manual_repo = args.repo_name if args.repo_name else resolved_repo_name
+    viewer = DatasetViewer(
+        data_dir=data_dir,
+        mode=args.mode,
+        version=args.version,
+        repo_name=manual_repo,
+    )
     viewer.run()

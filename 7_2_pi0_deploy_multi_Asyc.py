@@ -472,8 +472,8 @@ def main():
     # 2. 初始化环境
     print("Initializing MuJoCo...")
     xml_path = './asset/example_scene_y3.xml'
-    PnPEnv = SimpleEnv3(xml_path, action_type='eef_pose', state_type='joint_angle')
-    PnPEnv.reset(mode=DEPLOY_MODE)
+    # 启动时在构造函数内按 DEPLOY_MODE 完成一次 reset，避免重复 reset 拉长初始化。
+    PnPEnv = SimpleEnv3(xml_path, action_type='eef_pose', state_type='joint_angle', init_mode=DEPLOY_MODE)
 
     # 3. 初始化图像预处理
     IMG_TRANSFORM = get_default_transform()

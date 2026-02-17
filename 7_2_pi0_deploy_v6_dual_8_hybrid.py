@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-V4 环境部署脚本 - 支持 Arm 和 Base 双模式异步推理
+V6 环境部署脚本 - 支持 Arm 和 Base 双模式异步推理
 
 功能说明：
 - 按 C: 切换 arm/base 模式
@@ -59,9 +59,9 @@ import glfw
 
 # Arm 模型配置 (V5.3)
 ARM_CONFIG = {
-    'model_path': './ckpt/pi0_arm/pretrained_model_arm_v5_3',
-    'dataset_repo_id': 'omy_arm_data_v5_3',
-    'dataset_root': './demo_data_arm_v5_3',
+    'model_path': './ckpt/pi0_arm/pretrained_model_arm_v6',
+    'dataset_repo_id': 'omy_arm_data_v6',
+    'dataset_root': './demo_data_arm_v6',
     'chunk_size': 64,          # 🔥 V5.3: 从 5 改为 64
     'n_action_steps': 64,      # 🔥 V5.3: 从 5 改为 64
     'image_size': 224,  # arm 模型使用 224x224
@@ -136,17 +136,19 @@ LOAD_BASE_MODEL = False  # 是否加载 BASE 模型
 ARM_PILOT_RUN_MODE = True  # 🔥 已废弃，保留用于兼容性
 
 # ==========================================
-# 🔧 随机初始化配置（匹配 y_env4.py 和 collect_data_v4.py）
+# 🔧 随机初始化配置（匹配 y_env6.py 和 collect_data_v6.py）
 # ==========================================
 RANDOM_INIT_ENABLED = 0            # 0: 关闭, 1: 旧版(扇形区域), 2: 新版(圆形交集，仅简单模式)
 RANDOM_INIT_GRIPPER_OPEN = True    # True: 初始化时夹爪张开, False: 初始化时夹爪闭合
 
 # ==========================================
-# 🔧 Arm 单杯模式配置
+# 🚗 TB3 托盘 X 坐标随机化配置（匹配 y_env6.py / collect_data_v6.py）
 # ==========================================
-# 开启后：ARM 模式每次 reset 只保留一个杯子在桌面上，另一个杯子移到远处
-ARM_SINGLE_CUP_MODE = False
-ARM_SINGLE_CUP_HIDE_POS = np.array([30.0, 0.0, 1.0], dtype=np.float32)  # 30m 外, 高度 1m
+TB3_X_GAUSSIAN_ENABLED = False   # True: 使用高斯扰动；False: 固定位置
+TB3_X_CENTER = 0.20             # 固定位置或扰动中心
+TB3_X_OFFSET_STD = 0.04         # 高斯标准差（米）
+TB3_X_OFFSET_MIN = -0.10        # 偏移下限（米）
+TB3_X_OFFSET_MAX = 0.10         # 偏移上限（米）
 
 # 导入 LeRobot 和 MuJoCo 环境
 try:
@@ -155,7 +157,7 @@ try:
     from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
     from lerobot.configs.types import FeatureType
     from lerobot.common.datasets.utils import dataset_to_policy_features
-    from mujoco_env.y_env5_2 import SimpleEnv4, EXPERT_Y_GRASP_OFFSET
+    from mujoco_env.y_env6 import SimpleEnv6, EXPERT_Y_GRASP_OFFSET
 except ImportError as e:
     print(f"导入错误: {e}")
     sys.exit(1)
@@ -1295,7 +1297,7 @@ def load_base_policy(device):
 # ==========================================
 def main():
     print("\n" + "="*70)
-    print("🎮 V4 DUAL-MODE DEPLOYMENT (ARM + BASE)")
+    print("🎮 V6 DUAL-MODE DEPLOYMENT (ARM + BASE)")
     print("="*70)
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -1312,7 +1314,11 @@ def main():
     print(f"   ARM_PILOT_RUN_MODE: {ARM_PILOT_RUN_MODE} ({'简单模式' if ARM_PILOT_RUN_MODE else '困难模式'}) [已废弃]")
     print(f"   RANDOM_INIT_ENABLED: {RANDOM_INIT_ENABLED} ({'关闭' if RANDOM_INIT_ENABLED == 0 else 'V1 (扇形区域)' if RANDOM_INIT_ENABLED == 1 else 'V2 (圆形交集)'})")
     print(f"   RANDOM_INIT_GRIPPER_OPEN: {RANDOM_INIT_GRIPPER_OPEN}")
-    print(f"   ARM_SINGLE_CUP_MODE: {ARM_SINGLE_CUP_MODE}")
+    print(
+        f"   TB3_X_GAUSSIAN_ENABLED: {TB3_X_GAUSSIAN_ENABLED} "
+        f"(center={TB3_X_CENTER:.3f}, std={TB3_X_OFFSET_STD:.3f}, "
+        f"range=[{TB3_X_OFFSET_MIN:+.3f}, {TB3_X_OFFSET_MAX:+.3f}])"
+    )
     print(f"\n📋 Task Configuration:")
     print(f"   TASK_TIMEOUT_SEC: {TASK_TIMEOUT_SEC}s")
     print(f"   TASK_LOOP_COUNT: {TASK_LOOP_COUNT} ({'无限循环' if TASK_LOOP_COUNT == 0 else f'执行 {TASK_LOOP_COUNT} 次后退出'})")
@@ -1335,58 +1341,32 @@ def main():
     if arm_policy is None and base_policy is None:
         print("❌ Both policies failed to load or were disabled. Exiting.")
         return
-
-    def apply_arm_single_cup_mode(env, mode):
-        """
-        ARM 单杯模式：随机保留红/蓝其中一个在桌面，另一个移到远处，
-        并强制任务指令只对应桌面上的杯子。
-        """
-        if not ARM_SINGLE_CUP_MODE or mode != 'arm':
-            return
-
-        keep_color = np.random.choice(['red', 'blue'])
-        keep_body = 'body_obj_mug_5' if keep_color == 'red' else 'body_obj_mug_6'
-        hide_body = 'body_obj_mug_6' if keep_color == 'red' else 'body_obj_mug_5'
-
-        try:
-            env.env.set_p_base_body(body_name=hide_body, p=ARM_SINGLE_CUP_HIDE_POS.copy())
-            env.env.set_R_base_body(body_name=hide_body, R=np.eye(3, 3))
-
-            # 同步环境显示与任务目标，确保指令只对应桌面上的杯子
-            env.obj_target = keep_body
-            env.target_color = keep_color
-            env.instruction = f"Place the {keep_color} mug on the plate."
-            env.mugs_on_table = [keep_body]
-            env.mug_colors_on_table = {keep_body: keep_color}
-
-            print(
-                f"🧪 [SingleCup] Enabled: keep={keep_color}, "
-                f"hide={hide_body} -> pos={ARM_SINGLE_CUP_HIDE_POS.tolist()}"
-            )
-        except Exception as e:
-            print(f"⚠️ [SingleCup] Failed to apply single-cup mode: {e}")
     
-    # 2. 初始化环境 (使用 y_env4)
+    # 2. 初始化环境 (使用 y_env6)
     print("\n" + "="*60)
-    print("🌍 Initializing MuJoCo Environment (V4)...")
+    print("🌍 Initializing MuJoCo Environment (V6)...")
     print("="*60)
     
-    xml_path = './asset/example_scene_y4.xml'
+    xml_path = './asset/example_scene_y6.xml'
     # 🔥 使用 joint_angle 模式，直接支持模型输出的绝对关节角度
     # 手动控制时，teleop_robot 返回 eef_pose 增量，需要临时切换 action_type
-    # 🔥 修改：使用 random_init_enabled 和 random_init_gripper_open 参数（匹配 y_env4.py）
-    PnPEnv = SimpleEnv4(
+    # 🔥 修改：使用 random_init_enabled 和 random_init_gripper_open 参数（匹配 y_env6.py）
+    PnPEnv = SimpleEnv6(
         xml_path, 
         action_type='joint_angle',  # 🔥 改为 joint_angle，直接支持绝对关节角度
         state_type='joint_angle',
         random_init_enabled=RANDOM_INIT_ENABLED,
-        random_init_gripper_open=RANDOM_INIT_GRIPPER_OPEN
+        random_init_gripper_open=RANDOM_INIT_GRIPPER_OPEN,
+        tb3_x_gaussian_enabled=TB3_X_GAUSSIAN_ENABLED,
+        tb3_x_center=TB3_X_CENTER,
+        tb3_x_offset_std=TB3_X_OFFSET_STD,
+        tb3_x_offset_min=TB3_X_OFFSET_MIN,
+        tb3_x_offset_max=TB3_X_OFFSET_MAX,
     )
     
     # 初始模式设为 arm
     control_mode = 'arm'
     PnPEnv.reset(mode=control_mode)
-    apply_arm_single_cup_mode(PnPEnv, control_mode)
 
     # 3. 初始化图像预处理
     IMG_TRANSFORM = get_default_transform()
@@ -1475,7 +1455,7 @@ def main():
     
     # 打印操作指南
     print("\n" + "="*70)
-    print("🎮 V4 DUAL-MODE READY")
+    print("🎮 V6 DUAL-MODE READY")
     print("="*70)
     print("Controls:")
     print("  [C] Switch between ARM/BASE mode")
@@ -1532,7 +1512,6 @@ def main():
                     
                     # 重置环境
                     PnPEnv.reset(mode=control_mode)
-                    apply_arm_single_cup_mode(PnPEnv, control_mode)
                     step = 0
                     reset_task_timer()
                     print(f"\n🔄 Mode Switched to: {control_mode.upper()}")
@@ -1607,7 +1586,6 @@ def main():
                     arm_smoother.reset()  # 🔧 重置平滑器
                     
                     PnPEnv.reset(mode=control_mode)
-                    apply_arm_single_cup_mode(PnPEnv, control_mode)
                     step = 0
                     reset_task_timer()
                     print(f"\n🔄 Environment Reset. Mode: {control_mode.upper()}")
@@ -1668,6 +1646,11 @@ def main():
                             # 🔥 确保环境的随机初始化参数被正确设置（匹配数据采集脚本）
                             PnPEnv.random_init_enabled = RANDOM_INIT_ENABLED
                             PnPEnv.random_init_gripper_open = RANDOM_INIT_GRIPPER_OPEN
+                            PnPEnv.tb3_x_gaussian_enabled = TB3_X_GAUSSIAN_ENABLED
+                            PnPEnv.tb3_x_center = TB3_X_CENTER
+                            PnPEnv.tb3_x_offset_std = TB3_X_OFFSET_STD
+                            PnPEnv.tb3_x_offset_min = TB3_X_OFFSET_MIN
+                            PnPEnv.tb3_x_offset_max = TB3_X_OFFSET_MAX
                             # 🔥 异步模式下先停推理线程，避免旧观测在 reset 后写回旧动作 chunk
                             if not ARM_SYNC_INFERENCE and arm_runner:
                                 arm_runner.stop()
@@ -1680,7 +1663,6 @@ def main():
                                 arm_runner.reset_state()
                             arm_smoother.reset()
                             PnPEnv.reset(mode=control_mode)
-                            apply_arm_single_cup_mode(PnPEnv, control_mode)
                             # 🔥 reset 完成后重启异步推理线程，确保只消费新环境观测
                             if not ARM_SYNC_INFERENCE and arm_runner and auto_mode_arm:
                                 arm_runner.start()
@@ -1708,6 +1690,11 @@ def main():
                             # 🔥 确保环境的随机初始化参数被正确设置（匹配数据采集脚本）
                             PnPEnv.random_init_enabled = RANDOM_INIT_ENABLED
                             PnPEnv.random_init_gripper_open = RANDOM_INIT_GRIPPER_OPEN
+                            PnPEnv.tb3_x_gaussian_enabled = TB3_X_GAUSSIAN_ENABLED
+                            PnPEnv.tb3_x_center = TB3_X_CENTER
+                            PnPEnv.tb3_x_offset_std = TB3_X_OFFSET_STD
+                            PnPEnv.tb3_x_offset_min = TB3_X_OFFSET_MIN
+                            PnPEnv.tb3_x_offset_max = TB3_X_OFFSET_MAX
                             # 🔥 异步模式下先停推理线程，避免旧观测在 reset 后写回旧动作 chunk
                             if not ARM_SYNC_INFERENCE and arm_runner:
                                 arm_runner.stop()
@@ -1720,7 +1707,6 @@ def main():
                                 arm_runner.reset_state()
                             arm_smoother.reset()
                             PnPEnv.reset(mode=control_mode)
-                            apply_arm_single_cup_mode(PnPEnv, control_mode)
                             # 🔥 reset 完成后重启异步推理线程，确保只消费新环境观测
                             if not ARM_SYNC_INFERENCE and arm_runner and auto_mode_arm:
                                 arm_runner.start()
@@ -1843,7 +1829,6 @@ def main():
                         action, reset = PnPEnv.teleop_robot(mode='arm')
                         if reset:
                             PnPEnv.reset(mode='arm')
-                            apply_arm_single_cup_mode(PnPEnv, 'arm')
                             step = 0
                         else:
                             PnPEnv.step(action, mode='arm')
@@ -1891,7 +1876,6 @@ def main():
                         action, reset = PnPEnv.teleop_robot(mode='base')
                         if reset:
                             PnPEnv.reset(mode='base')
-                            apply_arm_single_cup_mode(PnPEnv, 'base')
                             if base_runner:
                                 base_runner.reset_state()
                             step = 0

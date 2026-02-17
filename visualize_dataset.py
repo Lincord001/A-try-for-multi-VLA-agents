@@ -4,38 +4,58 @@ import torch
 import time
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from mujoco_env.y_env4 import SimpleEnv4
+from mujoco_env.y_env6 import SimpleEnv6
 from mujoco_env.utils import add_title_to_img
 
 # ================= 配置区域 =================
 # 🔥 模式选择：'base' 或 'arm'
 MODE = 'arm'  # 切换这里来选择审阅底盘数据还是机械臂数据
 
-# 数据集配置（会根据 MODE 自动选择）
+# 🔥 数据集版本选择（同一模式下在新老数据之间切换）
+# 可选：
+# - arm 模式:  'v5' / 'v6'
+# - base 模式: 'v4'
+DATASET_VERSION = 'v6'
+
+# 数据集配置（会根据 MODE + DATASET_VERSION 自动选择）
 DATASET_CONFIG = {
     'base': {
-        'repo_name': 'demo_data_base_v4',
-        'root': './demo_data_base_v4',
-        'image_keys': ['front', 'left', 'right'],  # 底盘模式的相机
+        'v4': {
+            'repo_name': 'demo_data_base_v4',
+            'root': './demo_data_base_v4',
+            'image_keys': ['front', 'left', 'right'],  # 底盘模式的相机
+            'env_backend': 'y4',
+            'xml_path': './asset/example_scene_y4.xml',
+        }
     },
     'arm': {
-        'repo_name': 'demo_data_arm_v5',
-        'root': './demo_data_arm_v5',
-        'image_keys': ['agent', 'wrist'],  # 🔥 机械臂模式的相机（匹配 collect_data_v4.py）
+        'v5': {
+            'repo_name': 'demo_data_arm_v5',
+            'root': './demo_data_arm_v5',
+            'image_keys': ['agent', 'wrist'],  # 机械臂模式的相机
+            'env_backend': 'y4',
+            'xml_path': './asset/example_scene_y4.xml',
+        },
+        'v6': {
+            'repo_name': 'demo_data_arm_v6',
+            'root': './demo_data_arm_v6',
+            'image_keys': ['agent', 'wrist'],  # 与 v5 保持一致
+            'env_backend': 'y6',
+            'xml_path': './asset/example_scene_y6.xml',
+        },
     }
 }
 
-XML_PATH = './asset/example_scene_y4.xml'
 FPS = 20  # 录制时的帧率
 LOOP_EPISODE = 0  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
-START_EPISODE = 121  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
+START_EPISODE = 198  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
 # ===========================================
 
 
-class VisualizerEnv(SimpleEnv4):
-    def __init__(self, xml_path, mode='base', **kwargs):
-        super().__init__(xml_path, **kwargs)
+class VisualizerRenderMixin:
+    def __init__(self, mode='base', **kwargs):
+        super().__init__(**kwargs)
         self.vis_mode = mode
-        self.image_keys = DATASET_CONFIG[mode]['image_keys']
     
     def render(self, idx=0, rel_time=0.0):
         # =================== 🔥 图像 Overlay 显示逻辑 🔥 ===================
@@ -107,15 +127,48 @@ class VisualizerEnv(SimpleEnv4):
         self.env.render()
 
 
+class VisualizerEnv4(VisualizerRenderMixin, SimpleEnv4):
+    def __init__(self, xml_path, mode='base', **kwargs):
+        super().__init__(xml_path=xml_path, mode=mode, **kwargs)
+
+
+class VisualizerEnv6(VisualizerRenderMixin, SimpleEnv6):
+    def __init__(self, xml_path, mode='base', **kwargs):
+        super().__init__(xml_path=xml_path, mode=mode, **kwargs)
+
+
+def resolve_env_class(env_backend):
+    if env_backend == 'y4':
+        return VisualizerEnv4
+    if env_backend == 'y6':
+        return VisualizerEnv6
+    raise ValueError(f"Unsupported env backend: {env_backend}")
+
+
 def main():
-    # 根据 MODE 获取配置
-    config = DATASET_CONFIG[MODE]
+    # 根据 MODE + DATASET_VERSION 获取配置
+    mode_config = DATASET_CONFIG.get(MODE)
+    if mode_config is None:
+        print(f"Error: Unsupported MODE='{MODE}'. Available: {list(DATASET_CONFIG.keys())}")
+        return
+
+    if DATASET_VERSION not in mode_config:
+        print(
+            f"Error: Unsupported DATASET_VERSION='{DATASET_VERSION}' for MODE='{MODE}'. "
+            f"Available: {list(mode_config.keys())}"
+        )
+        return
+
+    config = mode_config[DATASET_VERSION]
     repo_name = config['repo_name']
     root = config['root']
     image_keys = config['image_keys']
+    env_backend = config['env_backend']
+    xml_path = config['xml_path']
+    env_class = resolve_env_class(env_backend)
     
     print(f"=" * 50)
-    print(f"📺 Visualize Dataset - Mode: {MODE.upper()}")
+    print(f"📺 Visualize Dataset - Mode: {MODE.upper()} | Version: {DATASET_VERSION}")
     print(f"=" * 50)
     print(f"Loading dataset from {root}...")
     
@@ -136,9 +189,9 @@ def main():
     
     print("\nInitializing Environment...")
     # 🔥 关键：action_type 必须是 'joint_angle'，因为数据集保存的是关节角度而非末端位姿
-    # 🔥 添加随机初始化参数（匹配 y_env4.py 和 collect_data_v4.py）
-    env = VisualizerEnv(
-        XML_PATH, 
+    # 🔥 添加随机初始化参数；环境后端和 XML 会随数据集版本自动切换
+    env = env_class(
+        xml_path,
         mode=MODE, 
         action_type='joint_angle', 
         state_type='joint_angle',
