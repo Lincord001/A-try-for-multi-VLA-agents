@@ -8,7 +8,7 @@ import glfw
 import threading
 import queue
 from PIL import Image  # 🔥 V4.1: 改回 PIL，与部署环境保持一致
-from mujoco_env.y_env6 import SimpleEnv6, TABLE_Z_HEIGHT
+from mujoco_env.y_env7 import SimpleEnv7, TABLE_Z_HEIGHT
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -77,10 +77,10 @@ AUTO_RECORD_TARGET_EPISODES = 150    # 🎯 单配置模式的目标录制条数
 AUTO_SHUTDOWN_ON_COMPLETE = True     # 🔌 完成后是否自动关闭仿真环境
 
 # --- 📁 数据集名称与路径 ---
-ARM_DATASET_NAME = 'omy_arm_data_v6_2'       # Arm 模式数据集名称
-ARM_DATASET_ROOT = './demo_data_arm_v6_2'    # Arm 模式数据集保存路径
-BASE_DATASET_NAME = 'omy_base_data_v6'     # Base 模式数据集名称  
-BASE_DATASET_ROOT = './demo_data_base_v6'  # Base 模式数据集保存路径
+ARM_DATASET_NAME = 'omy_arm_data_v7'       # Arm 模式数据集名称
+ARM_DATASET_ROOT = './demo_data_arm_v7'    # Arm 模式数据集保存路径
+BASE_DATASET_NAME = 'omy_base_data_v7'     # Base 模式数据集名称  
+BASE_DATASET_ROOT = './demo_data_base_v7'  # Base 模式数据集保存路径
 
 # --- 🖼️ 图像与录制 ---
 IMG_SIZE = 224                       # 图像分辨率 (224=ViT标准, 256=兼容旧数据)
@@ -103,7 +103,7 @@ AUTO_MAX_RESET_RETRIES = 5           # 物体倒了时最大重试次数
 
 # --- 场景配置 ---
 SEED = 0 
-XML_PATH = './asset/example_scene_y6.xml'
+XML_PATH = './asset/example_scene_y7.xml'
 
 # --- 派生配置（自动计算，勿手动修改）---
 MAX_FRAMES = MAX_EPISODE_SEC * FPS
@@ -126,7 +126,7 @@ MODE_CONFIG = {
     },
     'base': {
         'action_shape': (2,),
-        'state_shape': (2,),
+        'state_shape': (4,),  # [v_left, v_right, sin(yaw), cos(yaw)]
     }
 }
 
@@ -378,7 +378,7 @@ def main():
         f"(center={TB3_X_CENTER:.3f}, std={TB3_X_OFFSET_STD:.3f}, "
         f"range=[{TB3_X_OFFSET_MIN:+.3f}, {TB3_X_OFFSET_MAX:+.3f}])"
     )
-    PnPEnv = SimpleEnv6(
+    PnPEnv = SimpleEnv7(
         XML_PATH, seed=SEED, state_type='joint_angle', 
         random_init_enabled=RANDOM_INIT_ENABLED,
         random_init_gripper_open=RANDOM_INIT_GRIPPER_OPEN,

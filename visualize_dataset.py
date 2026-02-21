@@ -9,7 +9,7 @@ from mujoco_env.utils import add_title_to_img
 
 # ================= 配置区域 =================
 # 🔥 模式选择：'base' 或 'arm'
-MODE = 'arm'  # 切换这里来选择审阅底盘数据还是机械臂数据
+MODE = 'base'  # 切换这里来选择审阅底盘数据还是机械臂数据
 
 # 🔥 数据集版本选择（同一模式下在新老数据之间切换）
 # 可选：
@@ -20,12 +20,12 @@ DATASET_VERSION = 'v6'
 # 数据集配置（会根据 MODE + DATASET_VERSION 自动选择）
 DATASET_CONFIG = {
     'base': {
-        'v4': {
-            'repo_name': 'demo_data_base_v4',
-            'root': './demo_data_base_v4',
+        'v6': {
+            'repo_name': 'demo_data_base_v6',
+            'root': './demo_data_base_v6',
             'image_keys': ['front', 'left', 'right'],  # 底盘模式的相机
-            'env_backend': 'y4',
-            'xml_path': './asset/example_scene_y4.xml',
+            'env_backend': 'y6',
+            'xml_path': './asset/example_scene_y6.xml',
         }
     },
     'arm': {
@@ -47,8 +47,8 @@ DATASET_CONFIG = {
 }
 
 FPS = 20  # 录制时的帧率
-LOOP_EPISODE = 0  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
-START_EPISODE = 198  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
+LOOP_EPISODE = 49  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
+START_EPISODE = 0  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
 # ===========================================
 
 

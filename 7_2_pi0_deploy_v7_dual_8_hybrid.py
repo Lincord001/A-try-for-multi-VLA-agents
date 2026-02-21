@@ -78,7 +78,7 @@ BASE_CONFIG = {
     'chunk_size': 64,          # V6: 与 arm 对齐
     'n_action_steps': 64,      # V6: 与 arm 对齐
     'image_size': 224,  # base 模型使用 256x256
-    'state_dim': 2,
+    'state_dim': 4,  # [v_left, v_right, sin(yaw), cos(yaw)]
     'action_dim': 2,
     'camera_keys': ['front', 'left', 'right'],
 }
@@ -128,7 +128,7 @@ GRIPPER_CLOSE_THRESH = 0.25      # 低于此值才关闭夹爪
 # ==========================================
 # 🔧 模型加载选择
 # ==========================================
-LOAD_ARM_MODEL = True   # 是否加载 ARM 模型
+LOAD_ARM_MODEL = False   # 是否加载 ARM 模型
 LOAD_BASE_MODEL = True  # 是否加载 BASE 模型
 
 # ==========================================
@@ -160,7 +160,7 @@ try:
     from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
     from lerobot.configs.types import FeatureType
     from lerobot.common.datasets.utils import dataset_to_policy_features
-    from mujoco_env.y_env6 import SimpleEnv6, EXPERT_Y_GRASP_OFFSET
+    from mujoco_env.y_env7 import SimpleEnv7, EXPERT_Y_GRASP_OFFSET
 except ImportError as e:
     print(f"导入错误: {e}")
     sys.exit(1)
@@ -1474,16 +1474,16 @@ def main():
         print("❌ Both policies failed to load or were disabled. Exiting.")
         return
     
-    # 2. 初始化环境 (使用 y_env6)
+    # 2. 初始化环境 (使用 y7 场景)
     print("\n" + "="*60)
     print("🌍 Initializing MuJoCo Environment (V6)...")
     print("="*60)
     
-    xml_path = './asset/example_scene_y6.xml'
+    xml_path = './asset/example_scene_y7.xml'
     # 🔥 使用 joint_angle 模式，直接支持模型输出的绝对关节角度
     # 手动控制时，teleop_robot 返回 eef_pose 增量，需要临时切换 action_type
     # 🔥 修改：使用 random_init_enabled 和 random_init_gripper_open 参数（匹配 y_env6.py）
-    PnPEnv = SimpleEnv6(
+    PnPEnv = SimpleEnv7(
         xml_path, 
         action_type='joint_angle',  # 🔥 改为 joint_angle，直接支持绝对关节角度
         state_type='joint_angle',
@@ -1993,7 +1993,7 @@ def main():
                         # Base 自动控制模式
                         
                         # 1. 收集观测数据
-                        state = PnPEnv.get_base_state()  # (2,) 轮速度
+                        state = PnPEnv.get_base_state()  # (4,) [轮速 + 朝向sin/cos]
                         images_dict = PnPEnv.grab_image()  # {'front', 'left', 'right'}
                         
                         obs_capture_time = time.time()

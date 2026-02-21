@@ -34,8 +34,8 @@ DATASET_CONFIG = {
             "image_keys": ["agent", "wrist"],
         },
         "v6": {
-            "repo_name": "omy_arm_data_v6",
-            "root": "./demo_data_arm_v6",
+            "repo_name": "omy_arm_data_v6_1",
+            "root": "./demo_data_arm_v6_1",
             "image_keys": ["agent", "wrist"],
         },
     },
