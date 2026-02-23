@@ -8,6 +8,12 @@ import glfw
 import threading
 import queue
 from PIL import Image  # 🔥 V4.1: 改回 PIL，与部署环境保持一致
+
+# --- 🔥 GPU 选择（双 4090 环境可切换）---
+# 设置为 "0" 或 "1"，控制当前脚本使用哪张显卡
+GPU_DEVICE_ID = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = GPU_DEVICE_ID
+
 from mujoco_env.y_env7 import SimpleEnv7, TABLE_Z_HEIGHT
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
@@ -79,8 +85,8 @@ AUTO_SHUTDOWN_ON_COMPLETE = True     # 🔌 完成后是否自动关闭仿真环
 # --- 📁 数据集名称与路径 ---
 ARM_DATASET_NAME = 'omy_arm_data_v7'       # Arm 模式数据集名称
 ARM_DATASET_ROOT = './demo_data_arm_v7'    # Arm 模式数据集保存路径
-BASE_DATASET_NAME = 'omy_base_data_v7'     # Base 模式数据集名称  
-BASE_DATASET_ROOT = './demo_data_base_v7'  # Base 模式数据集保存路径
+BASE_DATASET_NAME = 'omy_base_data_v7_2'     # Base 模式数据集名称  
+BASE_DATASET_ROOT = './demo_data_base_v7_2'  # Base 模式数据集保存路径
 
 # --- 🖼️ 图像与录制 ---
 IMG_SIZE = 224                       # 图像分辨率 (224=ViT标准, 256=兼容旧数据)
@@ -445,9 +451,11 @@ def main():
     print("  [J] : Start Recording (开始录制)")
     print("  [K] : Stop & SAVE (停止并保存)")
     print("  [I] : 🔥 DISCARD Recording (丢弃当前录制) [NEW!]")
-    print("  [H] : 🚗 Base Auto Parking (base模式自动收尾停车，录制中会自动停录保存)")
     print("  [Z] : Reset Environment Only (仅重置环境)")
     print("  [C] : 🔥 HOT-SWITCH Mode (Base ↔ Arm)")
+    print("-"*60)
+    print("  Base Mode Only (小车模式专用):")
+    print("  [H] : 🚗 Base Auto Parking (base模式自动收尾停车，录制中会自动停录保存)")
     print("-"*60)
     print(" 🤖 ARM Mode Only (机械臂模式专用):")
     print("  [T] : Test Mode: Auto Execute (测试模式，不录制)")
@@ -1251,7 +1259,11 @@ def main():
                 if current_mode == 'arm':
                     action_to_save = PnPEnv.current_arm_q[:7].astype(np.float32)
                 else:
-                    action_to_save = action.astype(np.float32)
+                    # Base 模式存“意图动作”（未纠偏），便于模型学习高层控制意图。
+                    if hasattr(PnPEnv, 'get_base_action_intent'):
+                        action_to_save = PnPEnv.get_base_action_intent().astype(np.float32)
+                    else:
+                        action_to_save = action.astype(np.float32)
 
                 # 🔥 数据收集：异步处理模式 🔥
                 if is_recording or auto_is_recording:

@@ -72,11 +72,11 @@ ARM_CONFIG = {
 
 # Base 模型配置 (V3)
 BASE_CONFIG = {
-    'model_path': './ckpt/pi0_base/pretrained_model_base_v6_1',
-    'dataset_repo_id': 'omy_base_data_v6_1',
-    'dataset_root': './demo_data_base_v6_1',
-    'chunk_size': 64,          # V6: 与 arm 对齐
-    'n_action_steps': 64,      # V6: 与 arm 对齐
+    'model_path': './ckpt/pi0_base/pretrained_model_base_v7_2',
+    'dataset_repo_id': 'omy_base_data_v7_2',
+    'dataset_root': './demo_data_base_v7_2',
+    'chunk_size': 32,          # V6: 与 arm 对齐
+    'n_action_steps': 32,      # V6: 与 arm 对齐
     'image_size': 224,  # base 模型使用 256x256
     'state_dim': 4,  # [v_left, v_right, sin(yaw), cos(yaw)]
     'action_dim': 2,
@@ -106,6 +106,20 @@ CHUNK_THRESHOLD = 0  # 当剩余帧数 <= 此值时，开始新推理
 # Base 异步推理参数（与 Arm 逻辑保持一致）
 BASE_ACTION_HORIZON = 8
 BASE_CHUNK_THRESHOLD = 0
+
+# Base 自动推理动作后处理（可选）：
+# 仅作用于 auto_mode_base 下模型输出的 (v_left, v_right)。
+BASE_POSTPROC_ENABLED = True
+BASE_POSTPROC_HEADING_HOLD_ENABLED = True
+BASE_POSTPROC_KP_YAW = 64.0
+BASE_POSTPROC_MAX_TURN_V = 2.0
+BASE_POSTPROC_YAW_DEADBAND = np.deg2rad(0.5)
+BASE_POSTPROC_STRAIGHT_DELTA_TH = 1.5
+BASE_POSTPROC_MIN_ABS_SPEED = 1.0
+BASE_POSTPROC_MAX_WHEEL_ABS = 30.0
+# Base 轮速降速：对模型输出的所有运动（前进/后退/转弯）按比例缩放。
+BASE_FORWARD_SPEED_SCALE_ENABLED = False
+BASE_FORWARD_SPEED_SCALE = 0.5
 
 # 同步推理参数（仅当 ARM_SYNC_INFERENCE = True 时有效）：
 # 模型一次推理输出 n_action_steps（当前为64），控制时只执行前 ARM_EXEC_HORIZON 步
@@ -331,6 +345,72 @@ class ActionSmoother:
         smoothed_action = np.concatenate([joint_angles, [gripper_cmd]])
         
         return smoothed_action, self.gripper_state
+
+
+class BaseActionPostProcessor:
+    """Base 模式动作后处理：近似直行时启用航向锁定纠偏。"""
+
+    def __init__(self):
+        self.heading_hold_active = False
+        self.target_yaw = None
+        self.last_sign = 0  # +1 前进, -1 后退
+
+    @staticmethod
+    def _wrap_to_pi(angle):
+        return (angle + np.pi) % (2 * np.pi) - np.pi
+
+    def reset(self):
+        self.heading_hold_active = False
+        self.target_yaw = None
+        self.last_sign = 0
+
+    def process(self, raw_action, yaw):
+        action = np.array(raw_action, dtype=np.float32).copy()
+        if action.shape[0] != 2:
+            return action
+        if not BASE_POSTPROC_ENABLED:
+            return action
+
+        left, right = float(action[0]), float(action[1])
+        cmd_sign = 1 if (left + right) >= 0.0 else -1
+
+        # 对所有运动统一降速（包括前进/后退/转弯）。
+        if (
+            BASE_FORWARD_SPEED_SCALE_ENABLED
+            and BASE_FORWARD_SPEED_SCALE >= 0.0
+        ):
+            left *= BASE_FORWARD_SPEED_SCALE
+            right *= BASE_FORWARD_SPEED_SCALE
+
+        same_direction = left * right > 0.0
+        delta_small = abs(left - right) <= BASE_POSTPROC_STRAIGHT_DELTA_TH
+        speed_enough = max(abs(left), abs(right)) >= BASE_POSTPROC_MIN_ABS_SPEED
+        straight_like = same_direction and delta_small and speed_enough
+
+        # 只在“模型意图直行”时做航向纠偏；转向动作不干预。
+        if not BASE_POSTPROC_HEADING_HOLD_ENABLED or not straight_like:
+            self.reset()
+            # 这里返回缩放后的速度，确保转弯/后退同样生效降速。
+            return np.clip(
+                np.array([left, right], dtype=np.float32),
+                -BASE_POSTPROC_MAX_WHEEL_ABS,
+                BASE_POSTPROC_MAX_WHEEL_ABS,
+            )
+
+        if (not self.heading_hold_active) or (self.last_sign != cmd_sign):
+            self.target_yaw = float(yaw)
+            self.heading_hold_active = True
+            self.last_sign = cmd_sign
+
+        yaw_err = self._wrap_to_pi(self.target_yaw - float(yaw))
+        if abs(yaw_err) <= BASE_POSTPROC_YAW_DEADBAND:
+            turn = 0.0
+        else:
+            turn = float(np.clip(BASE_POSTPROC_KP_YAW * yaw_err, -BASE_POSTPROC_MAX_TURN_V, BASE_POSTPROC_MAX_TURN_V))
+
+        v = 0.5 * (left + right)
+        corrected = np.array([v - turn, v + turn], dtype=np.float32)
+        return np.clip(corrected, -BASE_POSTPROC_MAX_WHEEL_ABS, BASE_POSTPROC_MAX_WHEEL_ABS)
 
 
 # ==========================================
@@ -1443,6 +1523,11 @@ def main():
     print(f"   ACTION_HORIZON: {ACTION_HORIZON} (ASYNC only)")
     print(f"   BASE_ACTION_HORIZON: {BASE_ACTION_HORIZON} (ASYNC only)")
     print(f"   BASE_CHUNK_THRESHOLD: {BASE_CHUNK_THRESHOLD}")
+    print(
+        f"   BASE_POSTPROC: {'Enabled' if BASE_POSTPROC_ENABLED else 'Disabled'} "
+        f"(heading_hold={'On' if BASE_POSTPROC_HEADING_HOLD_ENABLED else 'Off'}, "
+        f"kp={BASE_POSTPROC_KP_YAW:.2f}, max_turn={BASE_POSTPROC_MAX_TURN_V:.2f})"
+    )
     print(f"   ARM_PILOT_RUN_MODE: {ARM_PILOT_RUN_MODE} ({'简单模式' if ARM_PILOT_RUN_MODE else '困难模式'}) [已废弃]")
     print(f"   RANDOM_INIT_ENABLED: {RANDOM_INIT_ENABLED} ({'关闭' if RANDOM_INIT_ENABLED == 0 else 'V1 (扇形区域)' if RANDOM_INIT_ENABLED == 1 else 'V2 (圆形交集)'})")
     print(f"   RANDOM_INIT_GRIPPER_OPEN: {RANDOM_INIT_GRIPPER_OPEN}")
@@ -1534,6 +1619,7 @@ def main():
         alpha_joints=SMOOTHING_ALPHA_JOINTS, 
         alpha_gripper=SMOOTHING_ALPHA_GRIPPER
     )
+    base_postproc = BaseActionPostProcessor()
     print(f"🔧 [ARM] Action Smoother initialized:")
     print(f"   - Smoothing Enabled: {SMOOTHING_ENABLED}")
     print(f"   - Joint Alpha: {SMOOTHING_ALPHA_JOINTS}")
@@ -1648,6 +1734,7 @@ def main():
                     if base_runner:
                         base_runner.reset_state()
                     arm_smoother.reset()  # 🔧 重置平滑器
+                    base_postproc.reset()
                     
                     # 切换模式
                     if control_mode == 'arm':
@@ -1681,6 +1768,7 @@ def main():
                     else:  # base mode
                         if base_runner is not None and not auto_mode_base:
                             auto_mode_base = True
+                            base_postproc.reset()
                             base_runner.start()
                             print("\n🚗 [BASE] PI0 Auto Control Started!")
                         elif base_runner is None:
@@ -1702,6 +1790,7 @@ def main():
                         if base_runner:
                             base_runner.stop()
                             base_runner.reset_state()  # 🔥 清除旧数据
+                        base_postproc.reset()
                         auto_mode_base = False
                         print("\n👤 [BASE] Switched to Manual Control")
                 
@@ -1730,6 +1819,7 @@ def main():
                     if base_runner:
                         base_runner.reset_state()
                     arm_smoother.reset()  # 🔧 重置平滑器
+                    base_postproc.reset()
                     
                     PnPEnv.reset(mode=control_mode)
                     step = 0
@@ -2007,9 +2097,12 @@ def main():
                         # 4. 执行动作
                         if action_step is not None:
                             # action_step 是 (2,) 数组: 左右轮速度
+                            yaw = float(np.arctan2(float(state[2]), float(state[3])))
+                            action_step = base_postproc.process(action_step, yaw)
                             PnPEnv.step(action_step, mode='base')
                         else:
                             # 没有可用动作，停止
+                            base_postproc.reset()
                             PnPEnv.step(np.array([0.0, 0.0]), mode='base')
                         
                         # 5. 渲染
@@ -2027,6 +2120,7 @@ def main():
                         action, reset = PnPEnv.teleop_robot(mode='base')
                         if reset:
                             PnPEnv.reset(mode='base')
+                            base_postproc.reset()
                             if base_runner:
                                 base_runner.reset_state()
                             step = 0

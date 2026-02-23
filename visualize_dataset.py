@@ -9,7 +9,7 @@ from mujoco_env.utils import add_title_to_img
 
 # ================= 配置区域 =================
 # 🔥 模式选择：'base' 或 'arm'
-MODE = 'base'  # 切换这里来选择审阅底盘数据还是机械臂数据
+MODE = 'arm'  # 切换这里来选择审阅底盘数据还是机械臂数据
 
 # 🔥 数据集版本选择（同一模式下在新老数据之间切换）
 # 可选：
@@ -47,8 +47,8 @@ DATASET_CONFIG = {
 }
 
 FPS = 20  # 录制时的帧率
-LOOP_EPISODE = 49  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
-START_EPISODE = 0  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
+LOOP_EPISODE = 0  # 如果设置为非零值（如5），则循环播放该episode；为0时播放所有episodes
+START_EPISODE = 198  # 如果设置为非零值（如3），则从该episode开始播放到最后一个；为0时从第一个开始播放
 # ===========================================
 
 

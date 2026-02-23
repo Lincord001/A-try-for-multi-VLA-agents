@@ -82,6 +82,12 @@ BASE_AUTO_ROTATE_IN_PLACE_TH = np.deg2rad(20.0)
 BASE_AUTO_MIN_TURN_CMD = 1.0
 BASE_AUTO_MIN_FWD_CMD = 2.0
 
+# --- Base 模式：直行航向闭环辅助（手动 W/S + H 键前推复用）---
+BASE_STRAIGHT_ASSIST_ENABLED = True
+BASE_STRAIGHT_KP_YAW = 8.0
+BASE_STRAIGHT_MAX_TURN_V = 3.0
+BASE_STRAIGHT_YAW_DEADBAND = np.deg2rad(0.5)
+
 
 def _parse_vec_attr(attr_text):
     return [float(x) for x in attr_text.strip().split()]
@@ -582,6 +588,11 @@ class SimpleEnv6:
         self.base_auto_stage_steps = 0
         self.base_auto_recording_active = False  # 由外层采集脚本每帧同步
         self.base_auto_record_stop_requested = False  # 结束后置 True，由外层决定是否停录
+        self.base_auto_push_target_yaw = None  # push_forward 阶段锁定航向
+        self.base_straight_assist_active = False
+        self.base_straight_target_yaw = None
+        self.base_straight_last_cmd_sign = 0  # +1: 前进, -1: 后退, 0: 空闲
+        self.base_action_intent = np.zeros(2, dtype=np.float32)  # 记录用于数据集的“未纠偏意图动作”
 
         self.init_viewer()
         self.reset(seed)
@@ -676,6 +687,26 @@ class SimpleEnv6:
             turn = float(np.clip(turn_raw, -BASE_AUTO_MAX_TURN_V, BASE_AUTO_MAX_TURN_V))
         return np.array([fwd - turn, fwd + turn], dtype=np.float32), False
 
+    def _base_drive_with_heading_hold(self, fwd_v, target_yaw):
+        """
+        以给定线速度行驶，并用 yaw 闭环做差速纠偏，抑制直线段偏航。
+        """
+        _, yaw = self._get_tb3_pose_xy_yaw()
+        yaw_err = self._wrap_to_pi(target_yaw - yaw)
+        if abs(yaw_err) <= BASE_STRAIGHT_YAW_DEADBAND:
+            turn = 0.0
+        else:
+            turn = float(np.clip(BASE_STRAIGHT_KP_YAW * yaw_err, -BASE_STRAIGHT_MAX_TURN_V, BASE_STRAIGHT_MAX_TURN_V))
+        return np.array([fwd_v - turn, fwd_v + turn], dtype=np.float32)
+
+    def _set_base_action_intent(self, cmd):
+        """记录 base 模式用于写数据集的意图动作（未经过二次纠偏）。"""
+        self.base_action_intent = np.array(cmd, dtype=np.float32).copy()
+
+    def get_base_action_intent(self):
+        """获取当前 base 模式的意图动作（用于采集脚本存盘）。"""
+        return self.base_action_intent.copy()
+
     def _start_base_auto_parking(self):
         self.base_auto_active = True
         self.base_auto_stage = 'goto_stage1'
@@ -683,6 +714,7 @@ class SimpleEnv6:
         self.base_auto_wait_deadline = None
         self.base_auto_stage_steps = 0
         self.base_auto_record_stop_requested = False
+        self.base_auto_push_target_yaw = None
         print(
             "\n🚗 [H] Base auto parking started: "
             "goto (0.2,-0.8) -> goto (0.2,-0.25) -> push forward -> wait 3s -> request stop recording"
@@ -696,11 +728,13 @@ class SimpleEnv6:
         self.base_auto_wait_deadline = None
         self.base_auto_stage_steps = 0
         self.base_auto_record_stop_requested = False
+        self.base_auto_push_target_yaw = None
         print(f"🛑 Base auto parking stopped: {reason}")
 
     def _run_base_auto_parking(self):
         """执行 H 键自动停车流程，返回当前帧 wheel 命令。"""
         if not self.base_auto_active:
+            self._set_base_action_intent([0.0, 0.0])
             return np.zeros(2, dtype=np.float32)
 
         timeout_frames = int(BASE_AUTO_STAGE_TIMEOUT_SEC * 20)
@@ -709,6 +743,7 @@ class SimpleEnv6:
             self.base_auto_stage_steps += 1
             if self.base_auto_stage_steps > timeout_frames:
                 self._stop_base_auto_parking("stage1 timeout")
+                self._set_base_action_intent([0.0, 0.0])
                 return np.zeros(2, dtype=np.float32)
             cmd, _ = self._base_nav_to_target(
                 BASE_AUTO_STAGE1_TARGET_XY,
@@ -724,12 +759,14 @@ class SimpleEnv6:
                 self.base_auto_stage = 'goto_stage2'
                 self.base_auto_stage_steps = 0
                 print("   ✅ Stage 1 passed near: (0.2, -0.8), switching to stage 2 target tracking...")
+            self._set_base_action_intent(cmd)
             return cmd
 
         if self.base_auto_stage == 'goto_stage2':
             self.base_auto_stage_steps += 1
             if self.base_auto_stage_steps > timeout_frames:
                 self._stop_base_auto_parking("stage2 timeout")
+                self._set_base_action_intent([0.0, 0.0])
                 return np.zeros(2, dtype=np.float32)
             cmd, _ = self._base_nav_to_target(
                 BASE_AUTO_STAGE2_TARGET_XY,
@@ -746,11 +783,17 @@ class SimpleEnv6:
                 self.base_auto_stage = 'push_forward'
                 self.base_auto_wait_deadline = time.monotonic() + BASE_AUTO_PUSH_SEC
                 self.base_auto_stage_steps = 0
+                _, yaw_now = self._get_tb3_pose_xy_yaw()
+                self.base_auto_push_target_yaw = yaw_now
                 print(
                     f"   ✅ Stage 2 near target. Pushing forward for {BASE_AUTO_PUSH_SEC:.1f}s "
                     f"to settle against table edge..."
                 )
+                self._set_base_action_intent([BASE_AUTO_PUSH_FWD_V, BASE_AUTO_PUSH_FWD_V])
+                if BASE_STRAIGHT_ASSIST_ENABLED:
+                    return self._base_drive_with_heading_hold(BASE_AUTO_PUSH_FWD_V, self.base_auto_push_target_yaw)
                 return np.array([BASE_AUTO_PUSH_FWD_V, BASE_AUTO_PUSH_FWD_V], dtype=np.float32)
+            self._set_base_action_intent(cmd)
             return cmd
 
         if self.base_auto_stage == 'push_forward':
@@ -758,12 +801,14 @@ class SimpleEnv6:
                 self.base_auto_wait_deadline = time.monotonic() + BASE_AUTO_PUSH_SEC
             if time.monotonic() >= self.base_auto_wait_deadline:
                 self.base_auto_wait_deadline = None
+                self.base_auto_push_target_yaw = None
                 # 仅在录制时等待 60 帧（约 3 秒@20Hz）；未录制则直接完成自动停车。
                 if self.base_auto_recording_active:
                     self.base_auto_stage = 'wait_done'
                     self.base_auto_wait_counter = BASE_AUTO_WAIT_FRAMES
                     self.base_auto_stage_steps = 0
                     print("   ✅ Push-forward done. Waiting 60 frames before finish (recording active)...")
+                    self._set_base_action_intent([0.0, 0.0])
                     return np.zeros(2, dtype=np.float32)
                 self.base_auto_active = False
                 self.base_auto_stage = 'idle'
@@ -771,7 +816,14 @@ class SimpleEnv6:
                 self.base_auto_record_stop_requested = True
                 print("   ✅ Push-forward done. Recording inactive, skip 3s wait.")
                 print("   🛑 Base auto parking finished. Stop-recording requested.")
+                self._set_base_action_intent([0.0, 0.0])
                 return np.zeros(2, dtype=np.float32)
+            self._set_base_action_intent([BASE_AUTO_PUSH_FWD_V, BASE_AUTO_PUSH_FWD_V])
+            if BASE_STRAIGHT_ASSIST_ENABLED:
+                if self.base_auto_push_target_yaw is None:
+                    _, yaw_now = self._get_tb3_pose_xy_yaw()
+                    self.base_auto_push_target_yaw = yaw_now
+                return self._base_drive_with_heading_hold(BASE_AUTO_PUSH_FWD_V, self.base_auto_push_target_yaw)
             return np.array([BASE_AUTO_PUSH_FWD_V, BASE_AUTO_PUSH_FWD_V], dtype=np.float32)
 
         if self.base_auto_stage == 'wait_done':
@@ -782,12 +834,14 @@ class SimpleEnv6:
                 self.base_auto_stage_steps = 0
                 self.base_auto_record_stop_requested = True
                 print("   🛑 Base auto parking finished. Stop-recording requested.")
+            self._set_base_action_intent([0.0, 0.0])
             return np.zeros(2, dtype=np.float32)
 
         # 未知状态兜底
         self.base_auto_active = False
         self.base_auto_stage = 'idle'
         self.base_auto_wait_deadline = None
+        self._set_base_action_intent([0.0, 0.0])
         return np.zeros(2, dtype=np.float32)
 
     def _sample_random_init_v1(self):
@@ -1148,6 +1202,11 @@ class SimpleEnv6:
         self.base_auto_stage_steps = 0
         self.base_auto_recording_active = False
         self.base_auto_record_stop_requested = False
+        self.base_auto_push_target_yaw = None
+        self.base_straight_assist_active = False
+        self.base_straight_target_yaw = None
+        self.base_straight_last_cmd_sign = 0
+        self.base_action_intent = np.zeros(2, dtype=np.float32)
         
         # 🔥 注意：moving_to_random 和 random_target_q 在 reset 中根据开关设置，这里不重置
 
@@ -2304,12 +2363,67 @@ class SimpleEnv6:
                 return self._run_base_auto_parking(), reset
 
             v_move = 15.0; v_turn = 6.0
-            if self.env.is_key_pressed_repeat(key=glfw.KEY_W): wheel_v = [v_move, v_move]
-            if self.env.is_key_pressed_repeat(key=glfw.KEY_S): wheel_v = [-v_move, -v_move]
-            if self.env.is_key_pressed_repeat(key=glfw.KEY_A): wheel_v = [-v_turn, v_turn]
-            if self.env.is_key_pressed_repeat(key=glfw.KEY_D): wheel_v = [v_turn, -v_turn]
-            
-            return np.array(wheel_v, dtype=np.float32), reset
+            w_pressed = self.env.is_key_pressed_repeat(key=glfw.KEY_W)
+            s_pressed = self.env.is_key_pressed_repeat(key=glfw.KEY_S)
+            a_pressed = self.env.is_key_pressed_repeat(key=glfw.KEY_A)
+            d_pressed = self.env.is_key_pressed_repeat(key=glfw.KEY_D)
+
+            # 与历史手感保持一致：A/D 具有更高优先级，可直接覆盖 W/S 直行。
+            if a_pressed and not d_pressed:
+                self.base_straight_assist_active = False
+                self.base_straight_target_yaw = None
+                self.base_straight_last_cmd_sign = 0
+                wheel_v = np.array([-v_turn, v_turn], dtype=np.float32)
+                self._set_base_action_intent(wheel_v)
+                return wheel_v, reset
+            if d_pressed and not a_pressed:
+                self.base_straight_assist_active = False
+                self.base_straight_target_yaw = None
+                self.base_straight_last_cmd_sign = 0
+                wheel_v = np.array([v_turn, -v_turn], dtype=np.float32)
+                self._set_base_action_intent(wheel_v)
+                return wheel_v, reset
+
+            # 直行段：锁定按键瞬间航向并持续闭环纠偏。
+            if w_pressed and not s_pressed:
+                self._set_base_action_intent([v_move, v_move])
+                if (
+                    not BASE_STRAIGHT_ASSIST_ENABLED
+                    or not self.base_straight_assist_active
+                    or self.base_straight_last_cmd_sign != 1
+                ):
+                    _, yaw_now = self._get_tb3_pose_xy_yaw()
+                    self.base_straight_target_yaw = yaw_now
+                    self.base_straight_assist_active = True
+                    self.base_straight_last_cmd_sign = 1
+                if BASE_STRAIGHT_ASSIST_ENABLED:
+                    return self._base_drive_with_heading_hold(v_move, self.base_straight_target_yaw), reset
+                return np.array([v_move, v_move], dtype=np.float32), reset
+
+            if s_pressed and not w_pressed:
+                self._set_base_action_intent([-6.0, -6.0])
+                if (
+                    not BASE_STRAIGHT_ASSIST_ENABLED
+                    or not self.base_straight_assist_active
+                    or self.base_straight_last_cmd_sign != -1
+                ):
+                    _, yaw_now = self._get_tb3_pose_xy_yaw()
+                    self.base_straight_target_yaw = yaw_now
+                    self.base_straight_assist_active = True
+                    self.base_straight_last_cmd_sign = -1
+                if BASE_STRAIGHT_ASSIST_ENABLED:
+                    return self._base_drive_with_heading_hold(-6.0, self.base_straight_target_yaw), reset
+                return np.array([-6.0, -6.0], dtype=np.float32), reset
+
+            # 退出直行段或手动转向时，释放航向锁定。
+            self.base_straight_assist_active = False
+            self.base_straight_target_yaw = None
+            self.base_straight_last_cmd_sign = 0
+
+            wheel_v = np.zeros(2, dtype=np.float32)
+            self._set_base_action_intent(wheel_v)
+
+            return wheel_v, reset
 
     def get_joint_state(self):
         """
