@@ -21,6 +21,11 @@ DATASET_CONFIG = {
             "root": "./demo_data_base_v6",
             "image_keys": ["front", "left", "right"],
         },
+        "v7": {
+            "repo_name": "omy_base_data_v7_5",
+            "root": "./demo_data_base_v7_5",
+            "image_keys": ["front", "left", "right"],
+        },
     },
     "arm": {
         "v5": {
@@ -36,6 +41,11 @@ DATASET_CONFIG = {
         "v6": {
             "repo_name": "omy_arm_data_v6_1",
             "root": "./demo_data_arm_v6_1",
+            "image_keys": ["agent", "wrist"],
+        },
+                "v7": {
+            "repo_name": "omy_arm_data_v7",
+            "root": "./demo_data_arm_v7",
             "image_keys": ["agent", "wrist"],
         },
     },
@@ -401,7 +411,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--version",
         type=str,
-        default="v6",
+        default="v7",
         help="数据集版本 (例如: arm 的 v5/v5_3/v6，base 的 v4/v6)",
     )
     parser.add_argument(

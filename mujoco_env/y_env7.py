@@ -49,12 +49,14 @@ V6_TABLE_Y_MIN = -0.11
 # 与专家撤离高度联动，留 5cm 容差，避免阈值与轨迹配置漂移
 SUCCESS_TCP_Z_MARGIN = 0.05
 
-# --- TB3 初始 X 轴随机化参数（方案A：全程高斯扰动）---
-TB3_X_CENTER = 0.30
+# --- TB3 初始 X 轴随机化参数（均匀分布）---
+TB3_X_CENTER = 0.21
 TB3_X_OFFSET_STD = 0.04
-TB3_X_OFFSET_MIN = -0.10
-TB3_X_OFFSET_MAX = 0.10
+TB3_X_OFFSET_MIN = -0.115
+TB3_X_OFFSET_MAX = 0.115
 TB3_X_OFFSET_MAX_ATTEMPTS = 50
+TB3_X_MIN = 0.095
+TB3_X_MAX = 0.325
 
 # --- Base 模式：H 键自动停车流程参数 ---
 BASE_AUTO_STAGE1_TARGET_XY = np.array([0.2, -0.8], dtype=np.float32)
@@ -268,19 +270,11 @@ def _configure_v7_table_notch(table_root):
         right_elem.set("pos", _format_vec_attr([right_pos_x, ext_pos_y, V7_TABLE_HALF_Z]))
 
 
-def _sample_tb3_x_offset(offset_std=TB3_X_OFFSET_STD, offset_min=TB3_X_OFFSET_MIN, offset_max=TB3_X_OFFSET_MAX):
-    """
-    从截断高斯分布采样 TB3 的 X 轴偏移：
-    - 均值 0，标准差 TB3_X_OFFSET_STD
-    - 截断范围 [TB3_X_OFFSET_MIN, TB3_X_OFFSET_MAX]
-    """
-    for _ in range(TB3_X_OFFSET_MAX_ATTEMPTS):
-        offset = np.random.normal(0.0, offset_std)
-        if offset_min <= offset <= offset_max:
-            return float(offset)
-
-    # 极少数情况下回退到 clip，避免意外无限循环
-    return float(np.clip(offset, offset_min, offset_max))
+def _sample_tb3_x_uniform(x_min=TB3_X_MIN, x_max=TB3_X_MAX):
+    """在 [x_min, x_max] 区间上均匀采样 TB3 的初始 x。"""
+    x_low = float(min(x_min, x_max))
+    x_high = float(max(x_min, x_max))
+    return float(np.random.uniform(x_low, x_high))
 
 
 def _build_offset_xml_bundle(base_scene_xml_path, z_offset):
@@ -500,9 +494,7 @@ HIDDEN_OBJ_Z = 1.0                   # 隐藏物体的Z坐标（高度）
 NAV_INSTRUCTIONS = [
     # 基础指令 (Basic)
     "Go to the workbench.",
-    "Navigate to the workbench.",
-    "Drive to the workbench.",
-    "Move to the workbench."
+    "Drive to the workbench."
 ]
 
 # 🔥 任务指令：支持红色和蓝色杯子
@@ -516,7 +508,8 @@ class SimpleEnv6:
                  random_init_enabled=False, random_init_gripper_open=True, select_smaller_angle_mug=False,
                  tb3_x_gaussian_enabled=True, tb3_x_center=TB3_X_CENTER,
                  tb3_x_offset_std=TB3_X_OFFSET_STD, tb3_x_offset_min=TB3_X_OFFSET_MIN,
-                 tb3_x_offset_max=TB3_X_OFFSET_MAX):
+                 tb3_x_offset_max=TB3_X_OFFSET_MAX,
+                 tb3_x_random_enabled=None, tb3_x_min=TB3_X_MIN, tb3_x_max=TB3_X_MAX):
         self.xml_path_input = xml_path
         self.xml_path_runtime = _build_offset_xml_bundle(xml_path, V6_Z_OFFSET)
         self.env = MuJoCoParserClass(name='Tabletop', rel_xml_path=self.xml_path_runtime)
@@ -532,7 +525,17 @@ class SimpleEnv6:
         self.select_smaller_angle_mug = select_smaller_angle_mug
 
         # 🔥 TB3 初始 X 轴随机化开关与参数（由外部传入）
-        self.tb3_x_gaussian_enabled = tb3_x_gaussian_enabled
+        # 兼容旧参数：若未传入新开关，沿用旧开关语义；并从旧参数推导新区间。
+        if tb3_x_random_enabled is None:
+            tb3_x_random_enabled = tb3_x_gaussian_enabled
+        if tb3_x_min is None or tb3_x_max is None:
+            tb3_x_min = tb3_x_center + tb3_x_offset_min
+            tb3_x_max = tb3_x_center + tb3_x_offset_max
+        self.tb3_x_random_enabled = bool(tb3_x_random_enabled)
+        self.tb3_x_min = float(min(tb3_x_min, tb3_x_max))
+        self.tb3_x_max = float(max(tb3_x_min, tb3_x_max))
+        # 旧字段保留，避免外部脚本直接访问时报错。
+        self.tb3_x_gaussian_enabled = self.tb3_x_random_enabled
         self.tb3_x_center = tb3_x_center
         self.tb3_x_offset_std = tb3_x_offset_std
         self.tb3_x_offset_min = tb3_x_offset_min
@@ -1136,18 +1139,12 @@ class SimpleEnv6:
 
         try:
             # 🔥 小车初始位置：可配置模式
-            # - 开启时：高斯扰动（截断）x = center + N(0, std), clipped to [min, max]
-            # - 关闭时：固定 x = center
-            if self.tb3_x_gaussian_enabled:
-                x_offset = _sample_tb3_x_offset(
-                    offset_std=self.tb3_x_offset_std,
-                    offset_min=self.tb3_x_offset_min,
-                    offset_max=self.tb3_x_offset_max,
-                )
-                x_init = self.tb3_x_center + x_offset
+            # - 开启时：区间均匀随机 x ~ U([tb3_x_min, tb3_x_max])
+            # - 关闭时：固定 x 为区间中点
+            if self.tb3_x_random_enabled:
+                x_init = _sample_tb3_x_uniform(self.tb3_x_min, self.tb3_x_max)
             else:
-                x_offset = 0.0
-                x_init = self.tb3_x_center
+                x_init = 0.5 * (self.tb3_x_min + self.tb3_x_max)
             y_init = -0.25
             z_init = 0.0
             yaw_init = np.deg2rad(90)  # +90度，朝向 y 轴正方向

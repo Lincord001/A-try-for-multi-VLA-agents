@@ -26,6 +26,7 @@ import os
 import sys
 import time
 import csv
+import random
 from pathlib import Path
 
 # ==========================================
@@ -59,9 +60,9 @@ import glfw
 
 # Arm 模型配置 (V5.3)
 ARM_CONFIG = {
-    'model_path': './ckpt/pi0_arm/pretrained_model_arm_v6_1',
-    'dataset_repo_id': 'omy_arm_data_v6_1',
-    'dataset_root': './demo_data_arm_v6_1',
+    'model_path': './ckpt/pi0_arm/pretrained_model_arm_v7',
+    'dataset_repo_id': 'omy_arm_data_v7',
+    'dataset_root': './demo_data_arm_v7',
     'chunk_size': 64,          # 🔥 V5.3: 从 5 改为 64
     'n_action_steps': 64,      # 🔥 V5.3: 从 5 改为 64
     'image_size': 224,  # arm 模型使用 224x224
@@ -72,9 +73,9 @@ ARM_CONFIG = {
 
 # Base 模型配置 (V3)
 BASE_CONFIG = {
-    'model_path': './ckpt/pi0_base/pretrained_model_base_v7_2',
-    'dataset_repo_id': 'omy_base_data_v7_2',
-    'dataset_root': './demo_data_base_v7_2',
+    'model_path': './ckpt/pi0_base/pretrained_model_base_v7_6',
+    'dataset_repo_id': 'omy_base_data_v7_6',
+    'dataset_root': './demo_data_base_v7_6',
     'chunk_size': 32,          # V6: 与 arm 对齐
     'n_action_steps': 32,      # V6: 与 arm 对齐
     'image_size': 224,  # base 模型使用 256x256
@@ -118,7 +119,7 @@ BASE_POSTPROC_STRAIGHT_DELTA_TH = 1.5
 BASE_POSTPROC_MIN_ABS_SPEED = 1.0
 BASE_POSTPROC_MAX_WHEEL_ABS = 30.0
 # Base 轮速降速：对模型输出的所有运动（前进/后退/转弯）按比例缩放。
-BASE_FORWARD_SPEED_SCALE_ENABLED = False
+BASE_FORWARD_SPEED_SCALE_ENABLED = True
 BASE_FORWARD_SPEED_SCALE = 0.5
 
 # 同步推理参数（仅当 ARM_SYNC_INFERENCE = True 时有效）：
@@ -142,7 +143,7 @@ GRIPPER_CLOSE_THRESH = 0.25      # 低于此值才关闭夹爪
 # ==========================================
 # 🔧 模型加载选择
 # ==========================================
-LOAD_ARM_MODEL = False   # 是否加载 ARM 模型
+LOAD_ARM_MODEL = True   # 是否加载 ARM 模型
 LOAD_BASE_MODEL = True  # 是否加载 BASE 模型
 
 # ==========================================
@@ -166,6 +167,87 @@ TB3_X_CENTER = 0.20             # 固定位置或扰动中心
 TB3_X_OFFSET_STD = 0.04         # 高斯标准差（米）
 TB3_X_OFFSET_MIN = -0.10        # 偏移下限（米）
 TB3_X_OFFSET_MAX = 0.10         # 偏移上限（米）
+
+# ==========================================
+# 🧭 部署侧文本任务指令组（左右方向键切换）
+# ==========================================
+# 说明：
+# - arm/base 各自维护独立的“指令组”
+# - 每个组包含多条文本任务
+# - 推理输入使用当前组内随机抽样结果（尽量避免与上一条重复）
+INSTRUCTION_GROUPS = {
+    'arm': [
+        {
+            'name': 'arm_default',
+            'instructions': [
+                "Place the red mug on the plate.",
+                "Place the blue mug on the plate.",
+            ],
+        },
+    ],
+    'base': [
+        {
+            'name': 'base_0',
+            'instructions': [
+                "Go to the workbench.",
+                "Drive to the workbench.",
+            ],
+        },
+        {
+            'name': 'base_1',
+            'instructions': [
+                "Move to the kitchen refrigerator.",
+
+            ],
+        },
+    ],
+}
+
+
+def _validate_instruction_groups():
+    for mode in ('arm', 'base'):
+        groups = INSTRUCTION_GROUPS.get(mode, [])
+        if len(groups) == 0:
+            raise ValueError(f"INSTRUCTION_GROUPS['{mode}'] cannot be empty.")
+        for group in groups:
+            name = group.get('name', '<unnamed>')
+            instructions = group.get('instructions', [])
+            if len(instructions) == 0:
+                raise ValueError(f"Instruction group '{name}' in mode '{mode}' has no instructions.")
+
+
+def _get_group_info(mode, group_indices):
+    groups = INSTRUCTION_GROUPS[mode]
+    total = len(groups)
+    idx = group_indices[mode] % total
+    group = groups[idx]
+    group_name = group.get('name', f'{mode}_group_{idx + 1}')
+    instructions = list(group.get('instructions', []))
+    return idx, total, group_name, instructions
+
+
+def _pick_instruction_from_active_group(mode, group_indices, last_instruction_by_mode):
+    _, _, _, instructions = _get_group_info(mode, group_indices)
+    last_inst = last_instruction_by_mode.get(mode)
+    candidates = [inst for inst in instructions if inst != last_inst]
+    if len(candidates) == 0:
+        candidates = instructions
+    picked = random.choice(candidates)
+    last_instruction_by_mode[mode] = picked
+    return picked
+
+
+def _apply_instruction_from_group(PnPEnv, mode, group_indices, last_instruction_by_mode, log_prefix=""):
+    idx, total, group_name, _ = _get_group_info(mode, group_indices)
+    picked_instruction = _pick_instruction_from_active_group(mode, group_indices, last_instruction_by_mode)
+    task_type = 'arm' if mode == 'arm' else 'nav'
+    PnPEnv.set_instruction(given=picked_instruction, task_type=task_type)
+    extra = f"{log_prefix} " if log_prefix else ""
+    print(
+        f"{extra}🧭 [{mode.upper()}] Instruction Group: {group_name} "
+        f"({idx + 1}/{total}) | Task: {PnPEnv.instruction}"
+    )
+
 
 # 导入 LeRobot 和 MuJoCo 环境
 try:
@@ -1506,6 +1588,10 @@ def load_base_policy(device):
 # 主程序
 # ==========================================
 def main():
+    global BASE_FORWARD_SPEED_SCALE_ENABLED
+    global BASE_FORWARD_SPEED_SCALE
+    _validate_instruction_groups()
+
     print("\n" + "="*70)
     print("🎮 V6 DUAL-MODE DEPLOYMENT (ARM + BASE)")
     print("="*70)
@@ -1528,6 +1614,11 @@ def main():
         f"(heading_hold={'On' if BASE_POSTPROC_HEADING_HOLD_ENABLED else 'Off'}, "
         f"kp={BASE_POSTPROC_KP_YAW:.2f}, max_turn={BASE_POSTPROC_MAX_TURN_V:.2f})"
     )
+    if BASE_FORWARD_SPEED_SCALE_ENABLED:
+        base_scale_status = f"ON ({BASE_FORWARD_SPEED_SCALE:.2f}x)"
+    else:
+        base_scale_status = "OFF"
+    print(f"   BASE_FORWARD_SPEED_SCALE: {base_scale_status}")
     print(f"   ARM_PILOT_RUN_MODE: {ARM_PILOT_RUN_MODE} ({'简单模式' if ARM_PILOT_RUN_MODE else '困难模式'}) [已废弃]")
     print(f"   RANDOM_INIT_ENABLED: {RANDOM_INIT_ENABLED} ({'关闭' if RANDOM_INIT_ENABLED == 0 else 'V1 (扇形区域)' if RANDOM_INIT_ENABLED == 1 else 'V2 (圆形交集)'})")
     print(f"   RANDOM_INIT_GRIPPER_OPEN: {RANDOM_INIT_GRIPPER_OPEN}")
@@ -1584,6 +1675,15 @@ def main():
     # 初始模式设为 arm
     control_mode = 'arm'
     PnPEnv.reset(mode=control_mode)
+    instruction_group_indices = {'arm': 0, 'base': 0}
+    last_instruction_by_mode = {'arm': None, 'base': None}
+    _apply_instruction_from_group(
+        PnPEnv,
+        control_mode,
+        instruction_group_indices,
+        last_instruction_by_mode,
+        log_prefix="[INIT]",
+    )
 
     # 3. 初始化图像预处理
     IMG_TRANSFORM = get_default_transform()
@@ -1694,6 +1794,8 @@ def main():
     print("  [N] Start PI0 Auto Control (current mode)")
     print("  [M] Switch to Manual Control")
     print("  [Z] Reset Environment")
+    print("  [K] Cycle BASE speed scaling: OFF -> 0.75x -> 0.50x")
+    print("  [←]/[→] Switch Instruction Group (current mode only)")
     print("  [L] 🔥 Toggle Auto-Control + Auto-Detection (ARM mode only)")
     print("      → Press once to ENABLE: model auto-execute + auto-check success/fail + auto-reset")
     print("      → Press again to DISABLE")
@@ -1745,10 +1847,37 @@ def main():
 
                     # 同步环境模式并刷新任务文本（不重置环境）
                     PnPEnv.control_mode = control_mode
-                    PnPEnv.set_instruction()
+                    _apply_instruction_from_group(
+                        PnPEnv,
+                        control_mode,
+                        instruction_group_indices,
+                        last_instruction_by_mode,
+                        log_prefix="🔄 [MODE SWITCH]",
+                    )
                     
                     print(f"\n🔄 Mode Switched to: {control_mode.upper()} (env preserved)")
                     print(f"   Task: {PnPEnv.instruction}")
+
+                # 左右键：切换“当前模式”的指令组（arm/base 严格隔离）
+                left_pressed = PnPEnv.env.is_key_pressed_once(key=glfw.KEY_LEFT)
+                right_pressed = PnPEnv.env.is_key_pressed_once(key=glfw.KEY_RIGHT)
+                if left_pressed or right_pressed:
+                    groups = INSTRUCTION_GROUPS[control_mode]
+                    if len(groups) <= 1:
+                        idx, total, group_name, _ = _get_group_info(control_mode, instruction_group_indices)
+                        print(f"\nℹ️ [{control_mode.upper()}] Only one instruction group: {group_name} ({idx + 1}/{total})")
+                    else:
+                        if right_pressed:
+                            instruction_group_indices[control_mode] = (instruction_group_indices[control_mode] + 1) % len(groups)
+                        else:
+                            instruction_group_indices[control_mode] = (instruction_group_indices[control_mode] - 1) % len(groups)
+                        _apply_instruction_from_group(
+                            PnPEnv,
+                            control_mode,
+                            instruction_group_indices,
+                            last_instruction_by_mode,
+                            log_prefix="🔁 [GROUP SWITCH]",
+                        )
                 
                 # N 键：启动自动控制
                 if PnPEnv.env.is_key_pressed_once(key=glfw.KEY_N):
@@ -1822,10 +1951,32 @@ def main():
                     base_postproc.reset()
                     
                     PnPEnv.reset(mode=control_mode)
+                    _apply_instruction_from_group(
+                        PnPEnv,
+                        control_mode,
+                        instruction_group_indices,
+                        last_instruction_by_mode,
+                        log_prefix="🔄 [RESET]",
+                    )
                     step = 0
                     reset_task_timer()
                     print(f"\n🔄 Environment Reset. Mode: {control_mode.upper()}")
                     print(f"   Task: {PnPEnv.instruction}")
+
+                # K 键：循环 Base 轮速缩放档位（OFF -> 0.75x -> 0.50x）
+                if PnPEnv.env.is_key_pressed_once(key=glfw.KEY_K):
+                    if not BASE_FORWARD_SPEED_SCALE_ENABLED:
+                        BASE_FORWARD_SPEED_SCALE_ENABLED = True
+                        BASE_FORWARD_SPEED_SCALE = 0.75
+                    elif abs(BASE_FORWARD_SPEED_SCALE - 0.75) < 1e-6:
+                        BASE_FORWARD_SPEED_SCALE = 0.5
+                    else:
+                        BASE_FORWARD_SPEED_SCALE_ENABLED = False
+
+                    if BASE_FORWARD_SPEED_SCALE_ENABLED:
+                        print(f"\n⚙️ [BASE] Forward speed scaling: ON ({BASE_FORWARD_SPEED_SCALE:.2f}x)")
+                    else:
+                        print("\n⚙️ [BASE] Forward speed scaling: OFF")
 
                 # L 键：开启/关闭自动检测+自动控制功能（开关）
                 if PnPEnv.env.is_key_pressed_once(key=glfw.KEY_L):
@@ -1903,6 +2054,13 @@ def main():
                                 arm_runner.reset_state()
                             arm_smoother.reset()
                             PnPEnv.reset(mode=control_mode)
+                            _apply_instruction_from_group(
+                                PnPEnv,
+                                control_mode,
+                                instruction_group_indices,
+                                last_instruction_by_mode,
+                                log_prefix="🔄 [AUTO-RESET]",
+                            )
                             # 🔥 reset 完成后重启异步推理线程，确保只消费新环境观测
                             if not ARM_SYNC_INFERENCE and arm_runner and auto_mode_arm:
                                 arm_runner.start()
@@ -1947,6 +2105,13 @@ def main():
                                 arm_runner.reset_state()
                             arm_smoother.reset()
                             PnPEnv.reset(mode=control_mode)
+                            _apply_instruction_from_group(
+                                PnPEnv,
+                                control_mode,
+                                instruction_group_indices,
+                                last_instruction_by_mode,
+                                log_prefix="🔄 [AUTO-RESET]",
+                            )
                             # 🔥 reset 完成后重启异步推理线程，确保只消费新环境观测
                             if not ARM_SYNC_INFERENCE and arm_runner and auto_mode_arm:
                                 arm_runner.start()
@@ -2069,6 +2234,13 @@ def main():
                         action, reset = PnPEnv.teleop_robot(mode='arm')
                         if reset:
                             PnPEnv.reset(mode='arm')
+                            _apply_instruction_from_group(
+                                PnPEnv,
+                                'arm',
+                                instruction_group_indices,
+                                last_instruction_by_mode,
+                                log_prefix="🔄 [ARM RESET]",
+                            )
                             step = 0
                             reset_task_timer()
                         else:
@@ -2120,6 +2292,13 @@ def main():
                         action, reset = PnPEnv.teleop_robot(mode='base')
                         if reset:
                             PnPEnv.reset(mode='base')
+                            _apply_instruction_from_group(
+                                PnPEnv,
+                                'base',
+                                instruction_group_indices,
+                                last_instruction_by_mode,
+                                log_prefix="🔄 [BASE RESET]",
+                            )
                             base_postproc.reset()
                             if base_runner:
                                 base_runner.reset_state()

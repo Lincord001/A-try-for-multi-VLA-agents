@@ -64,8 +64,8 @@ AUTO_RECORD_TARGET_EPISODES = 150    # 🎯 单配置模式的目标录制条数
 AUTO_SHUTDOWN_ON_COMPLETE = True     # 🔌 完成后是否自动关闭仿真环境
 
 # --- 📁 数据集名称与路径 ---
-ARM_DATASET_NAME = 'omy_arm_data_v5_3'       # Arm 模式数据集名称
-ARM_DATASET_ROOT = './demo_data_arm_v5_3'    # Arm 模式数据集保存路径
+ARM_DATASET_NAME = 'omy_arm_data_test'       # Arm 模式数据集名称
+ARM_DATASET_ROOT = './demo_data_arm_test'    # Arm 模式数据集保存路径
 BASE_DATASET_NAME = 'omy_base_data_v4'     # Base 模式数据集名称  
 BASE_DATASET_ROOT = './demo_data_base_v4'  # Base 模式数据集保存路径
 
