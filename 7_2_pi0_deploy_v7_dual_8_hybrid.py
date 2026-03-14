@@ -60,9 +60,9 @@ import glfw
 
 # Arm 模型配置 (V5.3)
 ARM_CONFIG = {
-    'model_path': './ckpt/pi0_arm/pretrained_model_arm_v7',
-    'dataset_repo_id': 'omy_arm_data_v7',
-    'dataset_root': './demo_data_arm_v7',
+    'model_path': './ckpt/pi0_arm/pretrained_model_arm_v7_1',
+    'dataset_repo_id': 'omy_arm_data_v7_1',
+    'dataset_root': './demo_data_arm_v7_1',
     'chunk_size': 64,          # 🔥 V5.3: 从 5 改为 64
     'n_action_steps': 64,      # 🔥 V5.3: 从 5 改为 64
     'image_size': 224,  # arm 模型使用 224x224
@@ -184,6 +184,13 @@ INSTRUCTION_GROUPS = {
                 "Place the blue mug on the plate.",
             ],
         },
+                {
+            'name': 'arm_01',
+            'instructions': [
+                "Take the red mug from the tray to the table.",
+                "Take the blue mug from the tray to the table.",
+            ],
+        },
     ],
     'base': [
         {
@@ -237,11 +244,13 @@ def _pick_instruction_from_active_group(mode, group_indices, last_instruction_by
     return picked
 
 
-def _apply_instruction_from_group(PnPEnv, mode, group_indices, last_instruction_by_mode, log_prefix=""):
+def _apply_instruction_from_group(PnPEnv, mode, group_indices, last_instruction_by_mode, log_prefix="", reinitialize_arm=False):
     idx, total, group_name, _ = _get_group_info(mode, group_indices)
     picked_instruction = _pick_instruction_from_active_group(mode, group_indices, last_instruction_by_mode)
     task_type = 'arm' if mode == 'arm' else 'nav'
     PnPEnv.set_instruction(given=picked_instruction, task_type=task_type)
+    if mode == 'arm' and reinitialize_arm:
+        PnPEnv.reset(mode='arm', preserve_instruction=True)
     extra = f"{log_prefix} " if log_prefix else ""
     print(
         f"{extra}🧭 [{mode.upper()}] Instruction Group: {group_name} "
@@ -1683,6 +1692,7 @@ def main():
         instruction_group_indices,
         last_instruction_by_mode,
         log_prefix="[INIT]",
+        reinitialize_arm=(control_mode == 'arm'),
     )
 
     # 3. 初始化图像预处理
@@ -1950,14 +1960,16 @@ def main():
                     arm_smoother.reset()  # 🔧 重置平滑器
                     base_postproc.reset()
                     
-                    PnPEnv.reset(mode=control_mode)
                     _apply_instruction_from_group(
                         PnPEnv,
                         control_mode,
                         instruction_group_indices,
                         last_instruction_by_mode,
                         log_prefix="🔄 [RESET]",
+                        reinitialize_arm=(control_mode == 'arm'),
                     )
+                    if control_mode != 'arm':
+                        PnPEnv.reset(mode=control_mode)
                     step = 0
                     reset_task_timer()
                     print(f"\n🔄 Environment Reset. Mode: {control_mode.upper()}")
@@ -2053,14 +2065,16 @@ def main():
                             if arm_runner:
                                 arm_runner.reset_state()
                             arm_smoother.reset()
-                            PnPEnv.reset(mode=control_mode)
                             _apply_instruction_from_group(
                                 PnPEnv,
                                 control_mode,
                                 instruction_group_indices,
                                 last_instruction_by_mode,
                                 log_prefix="🔄 [AUTO-RESET]",
+                                reinitialize_arm=(control_mode == 'arm'),
                             )
+                            if control_mode != 'arm':
+                                PnPEnv.reset(mode=control_mode)
                             # 🔥 reset 完成后重启异步推理线程，确保只消费新环境观测
                             if not ARM_SYNC_INFERENCE and arm_runner and auto_mode_arm:
                                 arm_runner.start()
@@ -2104,14 +2118,16 @@ def main():
                             if arm_runner:
                                 arm_runner.reset_state()
                             arm_smoother.reset()
-                            PnPEnv.reset(mode=control_mode)
                             _apply_instruction_from_group(
                                 PnPEnv,
                                 control_mode,
                                 instruction_group_indices,
                                 last_instruction_by_mode,
                                 log_prefix="🔄 [AUTO-RESET]",
+                                reinitialize_arm=(control_mode == 'arm'),
                             )
+                            if control_mode != 'arm':
+                                PnPEnv.reset(mode=control_mode)
                             # 🔥 reset 完成后重启异步推理线程，确保只消费新环境观测
                             if not ARM_SYNC_INFERENCE and arm_runner and auto_mode_arm:
                                 arm_runner.start()
@@ -2233,13 +2249,13 @@ def main():
                         
                         action, reset = PnPEnv.teleop_robot(mode='arm')
                         if reset:
-                            PnPEnv.reset(mode='arm')
                             _apply_instruction_from_group(
                                 PnPEnv,
                                 'arm',
                                 instruction_group_indices,
                                 last_instruction_by_mode,
                                 log_prefix="🔄 [ARM RESET]",
+                                reinitialize_arm=True,
                             )
                             step = 0
                             reset_task_timer()
@@ -2291,7 +2307,6 @@ def main():
                         # Base 手动控制模式
                         action, reset = PnPEnv.teleop_robot(mode='base')
                         if reset:
-                            PnPEnv.reset(mode='base')
                             _apply_instruction_from_group(
                                 PnPEnv,
                                 'base',
@@ -2299,6 +2314,7 @@ def main():
                                 last_instruction_by_mode,
                                 log_prefix="🔄 [BASE RESET]",
                             )
+                            PnPEnv.reset(mode='base')
                             base_postproc.reset()
                             if base_runner:
                                 base_runner.reset_state()

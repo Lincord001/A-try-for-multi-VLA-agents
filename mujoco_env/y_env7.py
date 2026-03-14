@@ -523,6 +523,8 @@ class SimpleEnv6:
         
         # 🔥 杯子选择模式开关（由外部传入）
         self.select_smaller_angle_mug = select_smaller_angle_mug
+        # 🔥 托盘初始化模式开关（可由采集脚本在运行时覆盖）
+        self.force_tray_init_enabled = False
 
         # 🔥 TB3 初始 X 轴随机化开关与参数（由外部传入）
         # 兼容旧参数：若未传入新开关，沿用旧开关语义；并从旧参数推导新区间。
@@ -1073,7 +1075,7 @@ class SimpleEnv6:
         
         return x_target, y_target, z_target
 
-    def reset(self, seed=None, mode=None, force_fixed_arm_init=False):
+    def reset(self, seed=None, mode=None, force_fixed_arm_init=False, preserve_instruction=False):
         if seed is not None: np.random.seed(seed)
         
         # 如果传入了 mode 参数，更新 control_mode（用于 set_instruction 判断）
@@ -1162,6 +1164,9 @@ class SimpleEnv6:
         
         # 状态重置
         self.last_q = copy.deepcopy(q_zero)
+        self.tray_initialized_color = None
+        self.tray_initialized_body = None
+        self.table_reference_positions = {}
         # 🔥 根据开关设置初始夹爪状态
         initial_gripper_state = 0.0 if self.random_init_gripper_open else 1.0
         self.current_arm_q = np.concatenate([q_zero, np.array([initial_gripper_state]*4)]) 
@@ -1218,7 +1223,11 @@ class SimpleEnv6:
         for _ in range(100):
             self.step_env()
             
-        self.set_instruction()  # 现在会根据 self.control_mode 自动设置正确的任务文本
+        if preserve_instruction and getattr(self, 'instruction', None):
+            current_task_type = getattr(self, 'task_type', 'arm' if self.control_mode == 'arm' else 'nav')
+            self.set_instruction(given=self.instruction, task_type=current_task_type)
+        else:
+            self.set_instruction()  # 现在会根据 self.control_mode 自动设置正确的任务文本
         # 🔥 gripper_state 已在上面根据 random_init_gripper_open 设置，这里不再重置
         
         # 重置时刷新一次图像缓存
@@ -1271,14 +1280,60 @@ class SimpleEnv6:
         mug_red_pos[1] = np.clip(mug_red_pos[1], TABLE_Y_MIN + 0.05, TABLE_Y_MAX - 0.05)
         mug_blue_pos[0] = np.clip(mug_blue_pos[0], TABLE_X_MIN + 0.05, TABLE_X_MAX - 0.05)
         mug_blue_pos[1] = np.clip(mug_blue_pos[1], TABLE_Y_MIN + 0.05, TABLE_Y_MAX - 0.05)
+
+        mug_red_R = np.eye(3,3)
+        mug_blue_R = np.eye(3,3)
+        # 记录“桌面参考坐标”：即该颜色杯子在非托盘初始化时的桌面位置
+        # 后续若该杯子被放到托盘上，专家策略可复用该桌面坐标作为放置终点。
+        self.table_reference_positions = {
+            'red': mug_red_pos.copy(),
+            'blue': mug_blue_pos.copy(),
+        }
+
+        # 🔥 新初始化逻辑（仅 Arm 模式）：根据当前任务，将对应颜色的杯子初始化到托盘上
+        desired_tray_color = getattr(self, 'pending_tray_init_color', None)
+        if self.control_mode == 'arm' and desired_tray_color in ('red', 'blue'):
+            try:
+                tb3_pos = self.env.get_p_body('tb3_base')
+            except Exception:
+                tb3_pos = None
+                print("⚠️ [Init] Cannot find tb3_base body, skip place-endpoint mug initialization.")
+
+            if tb3_pos is not None:
+                # 以你配置后的托盘杯子中心点为圆心，在半径 3cm 圆内随机采样初始化点
+                mug_center_pos = np.array([tb3_pos[0], tb3_pos[1] - 0.06, 0.49], dtype=np.float32)
+                sampled_xy = self.sample_point_in_circle(mug_center_pos[:2], radius=0.03)
+                mug_at_tb3_pos = np.array([sampled_xy[0], sampled_xy[1], mug_center_pos[2]], dtype=np.float32)
+                tray_mug_yaw = random.uniform(-np.pi, np.pi)
+                tray_mug_R = rpy2r(np.array([0.0, 0.0, tray_mug_yaw]))
+                if desired_tray_color == 'red':
+                    self.tray_initialized_color = 'red'
+                    self.tray_initialized_body = 'body_obj_mug_5'
+                    mug_red_pos = mug_at_tb3_pos.copy()
+                    mug_red_R = tray_mug_R
+                    print(
+                        f"🎯 [Init] Red mug initialized on tray circle (r<=3cm): "
+                        f"({mug_at_tb3_pos[0]:.3f}, {mug_at_tb3_pos[1]:.3f}, {mug_at_tb3_pos[2]:.3f}), "
+                        f"yaw={np.rad2deg(tray_mug_yaw):+.1f}°"
+                    )
+                else:
+                    self.tray_initialized_color = 'blue'
+                    self.tray_initialized_body = 'body_obj_mug_6'
+                    mug_blue_pos = mug_at_tb3_pos.copy()
+                    mug_blue_R = tray_mug_R
+                    print(
+                        f"🎯 [Init] Blue mug initialized on tray circle (r<=3cm): "
+                        f"({mug_at_tb3_pos[0]:.3f}, {mug_at_tb3_pos[1]:.3f}, {mug_at_tb3_pos[2]:.3f}), "
+                        f"yaw={np.rad2deg(tray_mug_yaw):+.1f}°"
+                    )
         
         # 设置红色杯子位置
         self.env.set_p_base_body(body_name='body_obj_mug_5', p=mug_red_pos)
-        self.env.set_R_base_body(body_name='body_obj_mug_5', R=np.eye(3,3))
+        self.env.set_R_base_body(body_name='body_obj_mug_5', R=mug_red_R)
         
         # 设置蓝色杯子位置
         self.env.set_p_base_body(body_name='body_obj_mug_6', p=mug_blue_pos)
-        self.env.set_R_base_body(body_name='body_obj_mug_6', R=np.eye(3,3))
+        self.env.set_R_base_body(body_name='body_obj_mug_6', R=mug_blue_R)
         
         # 隐藏其他杯子
         hidden_mugs = ['body_obj_mug_7', 'body_obj_mug_8']
@@ -1300,6 +1355,20 @@ class SimpleEnv6:
         # 记录桌上的物体信息（供 set_instruction 使用）
         self.mugs_on_table = ['body_obj_mug_5', 'body_obj_mug_6']
         self.mug_colors_on_table = {'body_obj_mug_5': 'red', 'body_obj_mug_6': 'blue'}
+
+    def _is_target_initialized_on_tray(self):
+        """当前目标杯子是否在本轮 reset 时被初始化到了托盘上。"""
+        target_color = getattr(self, 'target_color', None)
+        tray_color = getattr(self, 'tray_initialized_color', None)
+        return target_color in ('red', 'blue') and tray_color == target_color
+
+    def _get_tb3_tray_center_pos(self):
+        """返回托盘抓取中心点（与初始化托盘杯子的中心定义保持一致）。"""
+        try:
+            tb3_pos = self.env.get_p_body('tb3_base')
+        except Exception:
+            return None
+        return np.array([tb3_pos[0], tb3_pos[1] - 0.06, 0.49], dtype=np.float32)
 
     def set_instruction(self, given=None, task_type=None):
         """
@@ -1401,8 +1470,15 @@ class SimpleEnv6:
             self.instruction = given
             # 解析 obj_target 和 target_color (支持红色和蓝色杯子)
             if self.control_mode == 'arm' or self.task_type == 'arm':
+                is_tray_to_table_instruction = (
+                    'tray' in self.instruction.lower() and 'table' in self.instruction.lower()
+                )
+                force_tray_init = bool(getattr(self, 'force_tray_init_enabled', False))
+                # 约束：开启托盘初始化模式时，禁用“小角度优先选杯子”逻辑
+                # 避免托盘初始化与角度选杯产生冲突。
+                enable_smaller_angle_selection = self.select_smaller_angle_mug and (not force_tray_init)
                 # 🔥 如果启用了选择偏转角度更小的杯子模式，忽略指令中的颜色，直接选择角度更小的
-                if self.select_smaller_angle_mug:
+                if enable_smaller_angle_selection and not is_tray_to_table_instruction:
                     try:
                         # 获取两个杯子的位置
                         red_mug_pos = self.env.get_p_body('body_obj_mug_5')
@@ -1462,6 +1538,7 @@ class SimpleEnv6:
                         self.obj_target = 'body_obj_mug_5'
                         self.target_color = 'red'
                         print(f"⚠️ Warning: Instruction does not contain 'red' or 'blue'. Using red mug as default.")
+                self.pending_tray_init_color = self.target_color if (is_tray_to_table_instruction or force_tray_init) else None
             elif self.control_mode == 'base':
                 self.current_nav_instruction = given
 
@@ -1841,6 +1918,37 @@ class SimpleEnv6:
         
         return trajectory_with_tremor
     
+    def compute_current_place_endpoint(self, add_noise=True):
+        """
+        计算当前环境下专家策略的放置终点（place_pos）。
+
+        Parameters:
+            add_noise (bool): 是否叠加与专家策略一致的 Z 轴随机噪声。
+
+        Returns:
+            np.ndarray | None: 放置终点 [x, y, z]；若无法读取小车位姿则返回 None。
+        """
+        use_table_endpoint = self._is_target_initialized_on_tray()
+        z_noise = np.random.uniform(-EXPERT_Z_NOISE, EXPERT_Z_NOISE) if add_noise else 0.0
+
+        if use_table_endpoint:
+            target_color = getattr(self, 'target_color', None)
+            table_ref = getattr(self, 'table_reference_positions', {}).get(target_color)
+            if table_ref is not None:
+                # 托盘 -> 桌面：放置终点回到该颜色杯子的桌面参考坐标，并加放置偏置
+                x_target = float(np.clip(table_ref[0], TABLE_X_MIN + 0.05, TABLE_X_MAX - 0.05))
+                y_target = float(np.clip(table_ref[1] + EXPERT_Y_PLACE_OFFSET, TABLE_Y_MIN + 0.05, TABLE_Y_MAX - 0.05))
+                return np.array([x_target, y_target, EXPERT_Z_PLACE_BASE + z_noise], dtype=np.float32)
+
+        # 默认行为：放到小车托盘目标点
+        try:
+            tb3_pos = self.env.get_p_body('tb3_base')
+        except Exception:
+            print("⚠️ Cannot find tb3_base body.")
+            return None
+        y_place_offset = 0.25 * EXPERT_Y_PLACE_OFFSET  # 放到小车上时，Y偏置减半
+        return np.array([tb3_pos[0], tb3_pos[1] + y_place_offset, EXPERT_Z_PLACE_BASE + z_noise], dtype=np.float32)
+    
     def _compute_expert_trajectory(self, current_pos):
         """
         🔥 内部函数：计算专家策略轨迹（一次性计算完整轨迹，包括平滑上升）
@@ -1856,13 +1964,16 @@ class SimpleEnv6:
             print("⚠️ No target object set. Call set_instruction() first.")
             return []
         obj_pos = self.env.get_p_body(self.obj_target)
-        
-        # 获取小车当前位置：放置目标的 XY 基准改为小车坐标（非盘子）
-        try:
-            tb3_pos = self.env.get_p_body('tb3_base')
-        except:
-            print("⚠️ Cannot find tb3_base body.")
-            return []
+        target_on_tray = self._is_target_initialized_on_tray()
+        # 抓取始终以“目标杯子当前真实位置”为基准，再叠加抓取偏置。
+        # 这样能复用既有抓取逻辑，并避免托盘中心与杯子实际采样点不重合带来的误差。
+        grasp_anchor_pos = obj_pos
+        if target_on_tray:
+            print(
+                f"   🎯 Tray-init target detected ({self.target_color}). "
+                f"Using mug pose as grasp anchor: "
+                f"({grasp_anchor_pos[0]:.3f}, {grasp_anchor_pos[1]:.3f}, {grasp_anchor_pos[2]:.3f})"
+            )
         
         # ====== 🔥 0. 检查是否需要平滑上升，如果需要则计算上升终点 ======
         mid_z = EXPERT_FUNNEL_MID_Z
@@ -1896,12 +2007,12 @@ class SimpleEnv6:
         # 🔥 杯子抓取：使用Y轴偏移抓取杯子把手（与V2一致）
         y_grasp_offset = EXPERT_Y_GRASP_OFFSET  # 抓取杯子把手时的Y轴偏移
         
-        grasp_center_xy = np.array([obj_pos[0], obj_pos[1] + y_grasp_offset])
+        grasp_center_xy = np.array([grasp_anchor_pos[0], grasp_anchor_pos[1] + y_grasp_offset])
         
         # 抓取点（在物体真实坐标上叠加噪声和偏移）
         grasp_pos = np.array([
-            obj_pos[0] + np.random.uniform(-EXPERT_XY_NOISE_SCALE, EXPERT_XY_NOISE_SCALE),
-            obj_pos[1] + y_grasp_offset + np.random.uniform(-EXPERT_XY_NOISE_SCALE, EXPERT_XY_NOISE_SCALE),
+            grasp_anchor_pos[0] + np.random.uniform(-EXPERT_XY_NOISE_SCALE, EXPERT_XY_NOISE_SCALE),
+            grasp_anchor_pos[1] + y_grasp_offset + np.random.uniform(-EXPERT_XY_NOISE_SCALE, EXPERT_XY_NOISE_SCALE),
             EXPERT_Z_GRASP_BASE + np.random.uniform(-EXPERT_Z_NOISE, EXPERT_Z_NOISE)
         ])
         
@@ -1922,17 +2033,10 @@ class SimpleEnv6:
             EXPERT_FUNNEL_MID_Z  # 🔥 使用可调参数设置中间点Z坐标
         ])
         
-        # 放置点：
-        # - XY：使用当前小车坐标作为目标中心
-        # - Y：继续叠加放置偏移
-        # - Z：保持现有高度逻辑不变
-        y_place_offset = 0.25 * EXPERT_Y_PLACE_OFFSET  # 放到小车上时，Y偏置减半
-        
-        place_pos = np.array([
-            tb3_pos[0],
-            tb3_pos[1] + y_place_offset,
-            EXPERT_Z_PLACE_BASE + np.random.uniform(-EXPERT_Z_NOISE, EXPERT_Z_NOISE)
-        ])
+        # 放置点（复用统一接口，便于外部直接调用）
+        place_pos = self.compute_current_place_endpoint(add_noise=True)
+        if place_pos is None:
+            return []
         
         # 放置悬停点（盘子正上方）
         place_hover_pos = np.array([
@@ -2480,10 +2584,10 @@ class SimpleEnv6:
         
         # 判断目标杯子是否在小车目标点上
         try:
-            p_tb3 = self.env.get_p_body('tb3_base')
-            # 与放置阶段保持一致：目标点 = (tb3_x, tb3_y + y_place_offset)
-            y_place_offset = 0.25 * EXPERT_Y_PLACE_OFFSET
-            target_xy = np.array([p_tb3[0], p_tb3[1] + y_place_offset], dtype=np.float32)
+            place_pos = self.compute_current_place_endpoint(add_noise=False)
+            if place_pos is None:
+                return False
+            target_xy = place_pos[:2]
             xy_dist = np.linalg.norm(p_mug[:2] - target_xy)
             if xy_dist < 0.1:
                 # 夹爪已松开

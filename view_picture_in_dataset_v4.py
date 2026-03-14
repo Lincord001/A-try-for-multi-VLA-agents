@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import argparse
 import sys
+import textwrap
 import matplotlib.pyplot as plt
 from matplotlib.widgets import TextBox
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -44,8 +45,8 @@ DATASET_CONFIG = {
             "image_keys": ["agent", "wrist"],
         },
                 "v7": {
-            "repo_name": "omy_arm_data_v7",
-            "root": "./demo_data_arm_v7",
+            "repo_name": "omy_arm_data_v7_1",
+            "root": "./demo_data_arm_v7_1",
             "image_keys": ["agent", "wrist"],
         },
     },
@@ -151,6 +152,30 @@ class DatasetViewer:
         self.current_frame_idx = 0
         self.load_episode(0)
 
+    @staticmethod
+    def _to_display_text(value):
+        """将数据项中的文本字段安全转换为可显示字符串。"""
+        if value is None:
+            return ""
+
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+
+        if isinstance(value, np.ndarray):
+            if value.ndim == 0:
+                return str(value.item())
+            return " ".join(str(x) for x in value.tolist())
+
+        if isinstance(value, (list, tuple)):
+            return " ".join(str(x) for x in value)
+
+        return str(value)
+
     def load_episode(self, ep_idx):
         """加载指定 Episode 的帧范围信息"""
         if ep_idx < 0 or ep_idx >= self.num_episodes:
@@ -170,6 +195,43 @@ class DatasetViewer:
         
         self.current_frame_idx = 0
 
+    def get_frame_item(self, frame_idx):
+        """读取当前帧对应的数据项。"""
+        if self.frame_count == 0:
+            return None
+
+        actual_idx = self.frame_start + frame_idx
+        if actual_idx >= len(self.dataset):
+            return None
+
+        try:
+            return self.dataset[actual_idx]
+        except Exception as e:
+            print(f"⚠️ 警告: 无法读取帧 {actual_idx}: {e}")
+            return None
+
+    def get_frame_instruction(self, frame_idx):
+        """提取当前帧对应的任务/指令文本。"""
+        item = self.get_frame_item(frame_idx)
+        if item is None:
+            return "N/A"
+
+        candidate_keys = [
+            "task",
+            "instruction",
+            "instructions",
+            "language_instruction",
+            "text",
+            "prompt",
+        ]
+        for key in candidate_keys:
+            if key in item:
+                text = self._to_display_text(item[key]).strip()
+                if text:
+                    return text
+
+        return "N/A"
+
     def get_frame_image(self, frame_idx):
         """读取并拼接当前帧的所有视角"""
         if self.frame_count == 0:
@@ -180,10 +242,8 @@ class DatasetViewer:
         if actual_idx >= len(self.dataset):
             return np.zeros((300, 300, 3), dtype=np.uint8)
 
-        try:
-            item = self.dataset[actual_idx]
-        except Exception as e:
-            print(f"⚠️ 警告: 无法读取帧 {actual_idx}: {e}")
+        item = self.get_frame_item(frame_idx)
+        if item is None:
             return np.zeros((300, 300, 3), dtype=np.uint8)
 
         imgs = []
@@ -264,6 +324,7 @@ class DatasetViewer:
         plt.ion()
         fig = plt.figure(figsize=(12, 9))
         fig.canvas.manager.set_window_title('Dataset Viewer')
+        fig.subplots_adjust(top=0.86)
         
         # 创建主图像区域（为输入框留出空间）
         ax = plt.subplot2grid((10, 1), (0, 0), rowspan=9)
@@ -272,6 +333,14 @@ class DatasetViewer:
         image = self.get_frame_image(self.current_frame_idx)
         im = ax.imshow(image)
         ax.axis('off')
+        instruction_text = fig.text(
+            0.5,
+            0.97,
+            "",
+            ha='center',
+            va='top',
+            fontsize=16,
+        )
         
         # 创建输入框区域
         axbox = plt.subplot2grid((10, 1), (9, 0))
@@ -290,6 +359,8 @@ class DatasetViewer:
                         f"Frame: {self.current_frame_idx}/{self.frame_count-1} | "
                         f"Total Index: {actual_idx}", 
                         fontsize=10)
+            instruction = self.get_frame_instruction(self.current_frame_idx)
+            instruction_text.set_text(textwrap.fill(f"Instruction: {instruction}", width=100))
             fig.canvas.draw_idle()
             fig.canvas.flush_events()
         
