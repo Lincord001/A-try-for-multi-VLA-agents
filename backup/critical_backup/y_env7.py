@@ -1,6 +1,7 @@
 import sys
 import random
 import numpy as np
+import xml.etree.ElementTree as ET
 from mujoco_env.mujoco_parser import MuJoCoParserClass
 from mujoco_env.utils import prettify, sample_xyzs, rotation_matrix, add_title_to_img
 from mujoco_env.ik import solve_ik
@@ -10,10 +11,499 @@ import copy
 import time
 import glfw
 
-from .env_constants import *
-from .xml_helpers import _build_offset_xml_bundle, _sample_tb3_x_uniform
+# ====== V6 版本任务说明 ======
+# 任务：小车和机械臂协同，机械臂把红色杯子放到盘子上
+# V6 场景特点（基于V5_2）：
+#   - 桌面高度 0.83m
+#   - 机械臂基座在原点 (0, 0)
+#   - 使用杯子和盘子
+#   - 小车在远处固定位置 (x=0, y=3)
 
-class SimpleEnv7:
+# ====== 🤖 Expert Policy Parameters (专家策略参数) ======
+# 这些参数用于自动化录制数据的专家策略，可根据需要调整
+
+# ====== V6 Height Offset (统一高度偏移) ======
+# 作用范围：y_env6.py 中所有任务相关的 Z 目标（抓取/放置/初始化/成功判定等）
+# 调整方式：正值整体抬高，负值整体降低。
+# 注意：该常量不会自动修改 XML 中桌子/托盘几何高度；XML 高度需单独调整。
+V6_Z_OFFSET = 0.15
+
+# ====== V7 Docking Notch Parameters (桌子停靠凹坑参数) ======
+# 仅对 object_table_v7.xml 生效：
+# - 停靠区 [V7_DOCK_X_MIN, V7_DOCK_X_MAX] 在桌子 Y 负方向保持不延申
+# - 其余区域向 Y 负方向延申 V7_TABLE_Y_NEG_EXTENSION
+V7_DOCK_X_MIN = -0.08
+V7_DOCK_X_MAX = 0.50
+V7_TABLE_Y_NEG_EXTENSION = 0.10
+
+# object_table_v7 的基准几何参数（与 XML 保持一致）
+V7_TABLE_CENTER_X = 0.5
+V7_TABLE_HALF_X = 1.0
+V7_TABLE_HALF_Y = 0.7
+V7_TABLE_HALF_Z = 0.14
+
+# 仅保留桌面 y >= 该阈值的部分（其余裁剪掉）
+V6_TABLE_Y_MIN = -0.11
+
+# 成功判定时 TCP 的撤离高度容差（米）：
+# 与专家撤离高度联动，留 5cm 容差，避免阈值与轨迹配置漂移
+SUCCESS_TCP_Z_MARGIN = 0.05
+
+# --- TB3 初始 X 轴随机化参数（均匀分布）---
+TB3_X_CENTER = 0.21
+TB3_X_OFFSET_STD = 0.04
+TB3_X_OFFSET_MIN = -0.115
+TB3_X_OFFSET_MAX = 0.115
+TB3_X_OFFSET_MAX_ATTEMPTS = 50
+TB3_X_MIN = 0.095
+TB3_X_MAX = 0.325
+
+# --- Base 模式：H 键自动停车流程参数 ---
+BASE_AUTO_STAGE1_TARGET_XY = np.array([0.2, -0.8], dtype=np.float32)
+BASE_AUTO_STAGE2_TARGET_XY = np.array([0.2, -0.25], dtype=np.float32)
+BASE_AUTO_STAGE2_TARGET_YAW = np.deg2rad(90.0)  # 车头朝向 +Y
+BASE_AUTO_POS_TOL = 0.03
+BASE_AUTO_YAW_TOL = np.deg2rad(3.0)
+BASE_AUTO_STAGE1_X_TOL = 0.03
+BASE_AUTO_STAGE1_Y_TOL = 0.05
+BASE_AUTO_FINAL_POS_TOL = 0.015
+BASE_AUTO_FINAL_YAW_TOL = np.deg2rad(2.0)
+BASE_AUTO_FINAL_X_TOL = 0.02
+BASE_AUTO_FINAL_Y_EPS = 0.003
+BASE_AUTO_MAX_FWD_V = 15.0
+BASE_AUTO_MAX_TURN_V = 6.0
+BASE_AUTO_KP_LIN = 18.0
+BASE_AUTO_KP_ANG = 8.0
+BASE_AUTO_WAIT_SEC = 3.0
+BASE_AUTO_WAIT_FRAMES = 60
+BASE_AUTO_PUSH_SEC = 2.5
+BASE_AUTO_PUSH_FWD_V = 4.0
+BASE_AUTO_STAGE2_Y_NEAR_MARGIN = 0.02
+BASE_AUTO_STAGE_TIMEOUT_SEC = 20.0
+BASE_AUTO_ROTATE_IN_PLACE_TH = np.deg2rad(20.0)
+BASE_AUTO_MIN_TURN_CMD = 1.0
+BASE_AUTO_MIN_FWD_CMD = 2.0
+
+# --- Base 模式：直行航向闭环辅助（手动 W/S + H 键前推复用）---
+BASE_STRAIGHT_ASSIST_ENABLED = True
+BASE_STRAIGHT_KP_YAW = 8.0
+BASE_STRAIGHT_MAX_TURN_V = 3.0
+BASE_STRAIGHT_YAW_DEADBAND = np.deg2rad(0.5)
+
+
+def _parse_vec_attr(attr_text):
+    return [float(x) for x in attr_text.strip().split()]
+
+
+def _format_vec_attr(values):
+    return " ".join(f"{v:.6f}".rstrip("0").rstrip(".") for v in values)
+
+
+def _offset_attr_z(elem, attr_name, z_index=2, offset=0.0):
+    if elem is None:
+        return
+    attr_val = elem.get(attr_name)
+    if not attr_val:
+        return
+    vec = _parse_vec_attr(attr_val)
+    if len(vec) <= z_index:
+        return
+    vec[z_index] += offset
+    elem.set(attr_name, _format_vec_attr(vec))
+
+
+def _stretch_box_geom_upward(geom_elem, offset):
+    """
+    让 box 几何体“向上增高”而不是整体平移：
+    - 底面保持不变
+    - 顶面抬高 offset
+    """
+    if geom_elem is None:
+        return
+    if geom_elem.get("type", "box") != "box":
+        return
+
+    size_attr = geom_elem.get("size")
+    pos_attr = geom_elem.get("pos")
+    if not size_attr or not pos_attr:
+        return
+
+    size_vec = _parse_vec_attr(size_attr)
+    pos_vec = _parse_vec_attr(pos_attr)
+    if len(size_vec) < 3 or len(pos_vec) < 3:
+        return
+
+    # MuJoCo box size 的 z 分量是半高，向上增高 offset 需要半高增加 offset/2，
+    # 同时中心上移 offset/2 才能保持底面不动。
+    new_half_height = size_vec[2] + 0.5 * offset
+    size_vec[2] = max(1e-5, new_half_height)
+    pos_vec[2] += 0.5 * offset
+
+    geom_elem.set("size", _format_vec_attr(size_vec))
+    geom_elem.set("pos", _format_vec_attr(pos_vec))
+
+
+def _clip_box_geom_y_min(geom_elem, y_min):
+    """
+    将 box 几何体在 y 方向裁剪为 [y_min, +inf)：
+    - 保留 y >= y_min 的部分
+    - y < y_min 的部分删除
+    """
+    if geom_elem is None:
+        return
+    if geom_elem.get("type", "box") != "box":
+        return
+
+    size_attr = geom_elem.get("size")
+    pos_attr = geom_elem.get("pos")
+    if not size_attr or not pos_attr:
+        return
+
+    size_vec = _parse_vec_attr(size_attr)
+    pos_vec = _parse_vec_attr(pos_attr)
+    if len(size_vec) < 2 or len(pos_vec) < 2:
+        return
+
+    half_y = size_vec[1]
+    center_y = pos_vec[1]
+    cur_min_y = center_y - half_y
+    cur_max_y = center_y + half_y
+
+    # 完全在保留范围内，无需处理
+    if cur_min_y >= y_min:
+        return
+
+    # 完全在裁剪线以下，收缩到极小厚度避免非法尺寸
+    if cur_max_y <= y_min:
+        size_vec[1] = 1e-5
+        pos_vec[1] = y_min + 1e-5
+    else:
+        # 与裁剪线相交：更新中心和半尺寸，保留 [y_min, cur_max_y]
+        new_min_y = y_min
+        new_max_y = cur_max_y
+        size_vec[1] = max(1e-5, 0.5 * (new_max_y - new_min_y))
+        pos_vec[1] = 0.5 * (new_max_y + new_min_y)
+
+    geom_elem.set("size", _format_vec_attr(size_vec))
+    geom_elem.set("pos", _format_vec_attr(pos_vec))
+
+
+def _extend_cylinder_geom_upward(geom_elem, offset):
+    """
+    让 cylinder（用于支架）“向上加长”而不是整体平移：
+    - 下端保持不变
+    - 上端抬高 offset
+    """
+    if geom_elem is None:
+        return
+    if geom_elem.get("type") != "cylinder":
+        return
+
+    size_attr = geom_elem.get("size")
+    pos_attr = geom_elem.get("pos")
+    if not size_attr or not pos_attr:
+        return
+
+    size_vec = _parse_vec_attr(size_attr)
+    pos_vec = _parse_vec_attr(pos_attr)
+    if len(size_vec) < 2 or len(pos_vec) < 3:
+        return
+
+    # MuJoCo cylinder size[1] 是半高。
+    new_half_height = size_vec[1] + 0.5 * offset
+    size_vec[1] = max(1e-5, new_half_height)
+    pos_vec[2] += 0.5 * offset
+
+    geom_elem.set("size", _format_vec_attr(size_vec))
+    geom_elem.set("pos", _format_vec_attr(pos_vec))
+
+
+def _configure_v7_table_notch(table_root):
+    """
+    根据常量重写 object_table_v7 的两块 Y- 延申区域，
+    形成“中间停靠区不延申、两侧延申”的凹坑结构。
+    """
+    table_body = table_root.find(".//body[@name='front_object_table']")
+    if table_body is None:
+        return
+
+    # 直接读取主桌板几何，按其真实 x 范围构造两侧延申块。
+    # 注意：V7_DOCK_X_* 使用与场景一致的 x 坐标系，不再额外减中心偏移。
+    front_table = table_body.find(".//geom[@name='front_object_table']")
+    if front_table is None:
+        return
+    front_size = _parse_vec_attr(front_table.get("size", "1.0 0.7 0.14"))
+    front_pos = _parse_vec_attr(front_table.get("pos", "0.5 0 0.14"))
+    if len(front_size) < 3 or len(front_pos) < 3:
+        return
+
+    x_local_min = front_pos[0] - front_size[0]
+    x_local_max = front_pos[0] + front_size[0]
+    dock_local_min = V7_DOCK_X_MIN
+    dock_local_max = V7_DOCK_X_MAX
+
+    # 防御性裁剪，避免参数越界导致非法尺寸
+    dock_local_min = np.clip(dock_local_min, x_local_min, x_local_max)
+    dock_local_max = np.clip(dock_local_max, x_local_min, x_local_max)
+    if dock_local_max < dock_local_min:
+        dock_local_min, dock_local_max = dock_local_max, dock_local_min
+
+    ext_half_y = max(1e-5, 0.5 * V7_TABLE_Y_NEG_EXTENSION)
+    # 关键：主桌面会被裁剪到 y>=V6_TABLE_Y_MIN，凹坑延申应从该“可见前沿”往 -Y 推出。
+    ext_pos_y = V6_TABLE_Y_MIN - ext_half_y
+
+    left_elem = table_body.find(".//geom[@name='front_object_table_ext_left']")
+    right_elem = table_body.find(".//geom[@name='front_object_table_ext_right']")
+
+    if left_elem is not None:
+        left_len = max(0.0, dock_local_min - x_local_min)
+        left_half_x = max(1e-5, 0.5 * left_len)
+        left_pos_x = 0.5 * (x_local_min + dock_local_min)
+        left_elem.set("size", _format_vec_attr([left_half_x, ext_half_y, V7_TABLE_HALF_Z]))
+        left_elem.set("pos", _format_vec_attr([left_pos_x, ext_pos_y, V7_TABLE_HALF_Z]))
+
+    if right_elem is not None:
+        right_len = max(0.0, x_local_max - dock_local_max)
+        right_half_x = max(1e-5, 0.5 * right_len)
+        right_pos_x = 0.5 * (dock_local_max + x_local_max)
+        right_elem.set("size", _format_vec_attr([right_half_x, ext_half_y, V7_TABLE_HALF_Z]))
+        right_elem.set("pos", _format_vec_attr([right_pos_x, ext_pos_y, V7_TABLE_HALF_Z]))
+
+
+def _sample_tb3_x_uniform(x_min=TB3_X_MIN, x_max=TB3_X_MAX):
+    """在 [x_min, x_max] 区间上均匀采样 TB3 的初始 x。"""
+    x_low = float(min(x_min, x_max))
+    x_high = float(max(x_min, x_max))
+    return float(np.random.uniform(x_low, x_high))
+
+
+def _build_offset_xml_bundle(base_scene_xml_path, z_offset):
+    """
+    当 V6_Z_OFFSET != 0 时，生成一套带高度偏移的 v6 XML。
+    返回可直接传给 MuJoCoParserClass 的 scene xml 绝对路径。
+    """
+    if abs(z_offset) < 1e-9:
+        return base_scene_xml_path
+
+    scene_abs = os.path.abspath(base_scene_xml_path)
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    # 关键：把生成文件放在原 asset 层级附近，保持原有相对 include 路径可用。
+    asset_root = os.path.join(repo_root, "asset")
+
+    table_src = os.path.join(repo_root, "asset", "tabletop_v6", "object", "object_table_v7.xml")
+    omy_src = os.path.join(repo_root, "asset", "robotis_omy_v6", "omy_v6.xml")
+    tb3_src = os.path.join(repo_root, "asset", "robotis_tb3_v6", "turtlebot3_waffle_pi_v6.xml")
+
+    table_dst = os.path.join(
+        repo_root, "asset", "tabletop_v6", "object", "object_table_v7_offset_generated.xml"
+    )
+    omy_dst = os.path.join(
+        repo_root, "asset", "robotis_omy_v6", "omy_v6_offset_generated.xml"
+    )
+    tb3_dst = os.path.join(
+        repo_root, "asset", "robotis_tb3_v6", "turtlebot3_waffle_pi_v6_offset_generated.xml"
+    )
+    scene_dst = os.path.join(asset_root, "example_scene_y7_offset_generated.xml")
+
+    # 1) 桌子 + 台上相机
+    table_tree = ET.parse(table_src)
+    table_root = table_tree.getroot()
+    _configure_v7_table_notch(table_root)
+    # V7: 主桌板需要裁剪；两块延申板不裁剪，否则会被阈值直接裁没。
+    front_table = table_root.find(".//geom[@name='front_object_table']")
+    _clip_box_geom_y_min(front_table, V6_TABLE_Y_MIN)
+    _stretch_box_geom_upward(front_table, z_offset)
+
+    for ext_name in ["front_object_table_ext_left", "front_object_table_ext_right"]:
+        ext_geom = table_root.find(f".//geom[@name='{ext_name}']")
+        _stretch_box_geom_upward(ext_geom, z_offset)
+    for cam_body_name in ["camera", "camera2", "camera3"]:
+        cam_body = table_root.find(f".//body[@name='{cam_body_name}']")
+        # 相机跟随桌面高度整体上移。
+        _offset_attr_z(cam_body, "pos", z_index=2, offset=z_offset)
+    table_tree.write(table_dst, encoding="utf-8", xml_declaration=False)
+
+    # 2) 机械臂基座高度
+    omy_tree = ET.parse(omy_src)
+    omy_root = omy_tree.getroot()
+    link1_body = omy_root.find(".//body[@name='link1']")
+    _offset_attr_z(link1_body, "pos", z_index=2, offset=z_offset)
+    omy_tree.write(omy_dst, encoding="utf-8", xml_declaration=False)
+
+    # 3) 小车托盘高度（托盘盘面上移 + 立柱向上加长，底端不离开车体）
+    tb3_tree = ET.parse(tb3_src)
+    tb3_root = tb3_tree.getroot()
+    tray_body = tb3_root.find(".//body[@name='tb3_tray']")
+    _offset_attr_z(tray_body, "pos", z_index=2, offset=z_offset)
+    for pillar_name in ["tray_pillar_fl", "tray_pillar_fr", "tray_pillar_bl", "tray_pillar_br"]:
+        pillar_geom = tb3_root.find(f".//geom[@name='{pillar_name}']")
+        _extend_cylinder_geom_upward(pillar_geom, z_offset)
+    tb3_tree.write(tb3_dst, encoding="utf-8", xml_declaration=False)
+
+    # 4) 场景入口：改 include 指向上面三份偏移后的 XML
+    scene_tree = ET.parse(scene_abs)
+    scene_root = scene_tree.getroot()
+    for include in scene_root.findall(".//include"):
+        inc = include.get("file", "")
+        if "tabletop_v6/object/object_table_v7.xml" in inc:
+            include.set("file", "./tabletop_v6/object/object_table_v7_offset_generated.xml")
+        elif "robotis_omy_v6/omy_v6.xml" in inc:
+            include.set("file", "./robotis_omy_v6/omy_v6_offset_generated.xml")
+        elif "robotis_tb3_v6/turtlebot3_waffle_pi_v6.xml" in inc:
+            include.set("file", "./robotis_tb3_v6/turtlebot3_waffle_pi_v6_offset_generated.xml")
+    scene_tree.write(scene_dst, encoding="utf-8", xml_declaration=False)
+
+    print(
+        f"[V7_Z_OFFSET] Using runtime XML bundle with z_offset={z_offset:+.3f} at: {scene_dst}"
+    )
+    return scene_dst
+
+# --- 高度参数 ---
+# 🔥 V6沿用原有抓取逻辑参数：桌面与盘子任务参数保持兼容
+EXPERT_Z_TRAVEL_BASE = 0.43 + V6_Z_OFFSET  # 巡航基础高度（支持统一偏移）
+EXPERT_Z_TRAVEL_NOISE = 0.03         # 巡航高度随机扰动范围 ± (Cruise height noise)
+EXPERT_Z_GRASP_BASE = 0.32 + V6_Z_OFFSET   # 抓取高度基础值（支持统一偏移）
+EXPERT_Z_PLACE_BASE = 0.33 + V6_Z_OFFSET   # 放置高度基础值（支持统一偏移）
+EXPERT_RETRACT_HEIGHT = 0.48 + V6_Z_OFFSET # 撤离安全高度（支持统一偏移）
+
+# --- 位置偏移与噪声 ---
+EXPERT_XY_NOISE_SCALE = 0.01        # 端点随机噪声范围 ±3mm (Endpoint noise for robustness)
+EXPERT_Y_GRASP_OFFSET = 0.067       # 抓取Y轴固定偏移（用于抓取杯子把手）(Y offset for cup handle)
+EXPERT_Y_PLACE_OFFSET = 0.03        # 放置时的 Y 轴固定偏移
+EXPERT_HOVER_NOISE = 0.01            # 悬停点误差 (Hover point noise)
+EXPERT_Z_NOISE = 0.005               # Z轴高度微小随机噪声 (Z height noise)
+
+# --- 🔥 漏斗移动逻辑参数 (Funnel Approach Parameters) ---
+# 🔥 悬停点和中间点的圆半径参数（用于漏斗式接近策略，方便调参）
+EXPERT_FUNNEL_HOVER_RADIUS = 0.02   # 悬停点圆半径（米）(Hover point circle radius, 3cm)
+EXPERT_FUNNEL_MID_RADIUS = 0.01     # 中间点圆半径（米）(Mid point circle radius, 1cm)
+# 🔥 悬停点和中间点的Z坐标参数（圆心高度）
+EXPERT_FUNNEL_HOVER_Z = None        # 悬停点Z坐标（米），None=使用巡航高度z_travel
+EXPERT_FUNNEL_MID_Z = 0.40 + V6_Z_OFFSET  # 中间点Z坐标（支持统一偏移）
+
+# --- 🔥 人类抖动模拟参数 (Human Tremor Simulation Parameters) ---
+EXPERT_TREMOR_ENABLED = True           # 是否启用抖动 (Enable tremor)
+EXPERT_TREMOR_AMPLITUDE = 0.002       # 抖动幅度（米）(Tremor amplitude, 2mm)
+EXPERT_TREMOR_SMOOTHNESS = 0.7        # 抖动平滑度 (0-1，越大越平滑) (Tremor smoothness)
+
+# --- 🔥 动态步数参数（基于距离计算，提高数据多样性）---
+# 末端执行器速度参数（米/步），用于根据距离动态计算步数
+# 🔥 V4.1: 速度减半，使单条数据集时长变为原来的2倍
+EXPERT_SPEED_APPROACH = 0.006        # 接近阶段速度 (Approach speed, m/step) - 原0.012减半
+EXPERT_SPEED_APPROACH_SMALLER_ANGLE = 0.004  # 🔥 角度较小的杯子接近阶段速度 (Approach speed for smaller angle mug, m/step)
+EXPERT_SPEED_DESCEND = 0.005         # 下降阶段速度 (Descend speed, m/step) - 原0.010减半
+EXPERT_SPEED_LIFT = 0.006            # 提升阶段速度 (Lift speed, m/step) - 原0.008减半
+EXPERT_SPEED_TRANSPORT = 0.008       # 运输阶段速度 (Transport speed, m/step) - 原0.008减半
+EXPERT_SPEED_LOWER = 0.006           # 下降到放置点速度 (Lower speed, m/step) - 原0.008减半
+EXPERT_SPEED_RETRACT = 0.006         # 撤离阶段速度 (Retract speed, m/step) - 原0.010减半
+
+# 最小/最大步数限制（防止极端情况）
+EXPERT_MIN_STEPS = 8                 # 任何阶段的最小步数 (Min steps for any phase)
+EXPERT_MAX_STEPS = 200                # 任何阶段的最大步数 (Max steps for any phase)
+
+# 等待阶段步数（带随机扰动范围）
+EXPERT_OPEN_WAIT_BASE = 4            # 🔥 初始张开夹爪等待基础步数 (Initial open gripper wait base steps)
+EXPERT_OPEN_WAIT_NOISE = 1           # 🔥 初始张开夹爪等待随机扰动 ± (Initial open gripper wait noise)
+EXPERT_GRASP_WAIT_BASE = 8           # 抓取等待基础步数 (Grasp wait base steps)
+EXPERT_GRASP_WAIT_NOISE = 2          # 抓取等待随机扰动 ± (Grasp wait noise)
+EXPERT_PLACE_WAIT_BASE = 8           # 放置等待基础步数 (Place wait base steps)
+EXPERT_PLACE_WAIT_NOISE = 2          # 放置等待随机扰动 ± (Place wait noise)
+
+# 速度随机扰动范围（增加多样性）
+EXPERT_SPEED_NOISE_RATIO = 0.2       # 速度随机扰动比例 ±20% (Speed noise ratio)
+
+# --- 贝塞尔曲线控制点参数 ---
+EXPERT_BEZIER_XY_OFFSET = 0.02       # 贝塞尔控制点XY随机偏移范围 (Control point XY offset)
+EXPERT_BEZIER_Z_OFFSET_MIN = 0.0     # 贝塞尔控制点Z轴最小偏移 (Control point Z min offset)
+EXPERT_BEZIER_Z_OFFSET_MAX = 0.05    # 贝塞尔控制点Z轴最大偏移 (Control point Z max offset)
+
+# --- 🔥 新增：基于机械臂基座避障的贝塞尔曲线参数 ---
+EXPERT_BEZIER_AVOID_RADIUS = 0.2     # 机械臂基座避障半径（米）(Arm base avoidance radius)
+EXPERT_BEZIER_TANGENT_MARGIN = 0.05  # 与圆相切时的安全余量（米）(Safety margin when tangent to circle)
+EXPERT_BEZIER_SMALL_CURVE = 0.08     # 直线不穿过圆时的小弧线偏移（米）(Small curve offset when line doesn't cross circle)
+
+# --- 录制缓冲参数 ---
+EXPERT_START_DELAY = 0               # 🔥 启动缓冲期步数（已禁用，立即开始录制）(Pre-recording buffer steps)
+EXPERT_POST_WAIT = 60                # 🔥 执行完成后等待步数（3秒，20Hz下）用于人工确认 (Post-execution wait steps)
+
+# --- 🔥 夹爪随机初始化参数 (Random Initialization Parameters) ---
+RANDOM_INIT_ENABLED = 0              # 🔥 随机初始化模式（由 collect_data_v4.py 传入）: 0=关闭, 1=旧版(扇形区域), 2=新版(环形交集)
+RANDOM_INIT_CIRCLE_INNER_RADIUS = 0.02  # 🔥 新版随机初始化：以红色杯子为中心的环形区域内半径（米）
+RANDOM_INIT_CIRCLE_OUTER_RADIUS = 0.05  # 🔥 新版随机初始化：以红色杯子为中心的环形区域外半径（米）
+RANDOM_INIT_ANGLE_MIN = 0            # 角度范围最小值（度）(Min angle in degrees, 与V2一致)
+RANDOM_INIT_ANGLE_MAX = 45           # 角度范围最大值（度）(Max angle in degrees, 与V2一致)
+# 🔥 V1模式专用角度参数
+RANDOM_INIT_ANGLE_MIN_V1 = 0         # V1模式角度范围最小值（度）(V1 Min angle in degrees)
+RANDOM_INIT_ANGLE_MAX_V1 = 15        # V1模式角度范围最大值（度）(V1 Max angle in degrees, 0~15度)
+RANDOM_INIT_RADIUS_MIN = 0.3         # 径向距离最小值（米）(Min radial distance in meters)
+RANDOM_INIT_RADIUS_MAX = 0.4         # 径向距离最大值（米）(Max radial distance in meters)
+# 🔥 V1模式专用径向距离参数
+RANDOM_INIT_RADIUS_MIN_V1 = 0.275   # V1模式径向距离最小值（米）(V1 Min radial distance in meters)
+RANDOM_INIT_RADIUS_MAX_V1 = 0.325   # V1模式径向距离最大值（米）(V1 Max radial distance in meters)
+RANDOM_INIT_Z_MIN = 0.38 + V6_Z_OFFSET  # Z坐标最小值（支持统一偏移）
+RANDOM_INIT_Z_MAX = 0.48 + V6_Z_OFFSET  # Z坐标最大值（支持统一偏移）
+# 🔥 V1模式专用Z轴参数
+RANDOM_INIT_Z_MIN_V1 = 0.43 + V6_Z_OFFSET  # V1模式Z坐标最小值（支持统一偏移）
+RANDOM_INIT_Z_MAX_V1 = 0.48 + V6_Z_OFFSET  # V1模式Z坐标最大值（支持统一偏移）
+RANDOM_INIT_Z_MIN_V2 = 0.36 + V6_Z_OFFSET  # V2模式Z坐标最小值（支持统一偏移）
+RANDOM_INIT_Z_MAX_V2 = 0.48 + V6_Z_OFFSET  # V2模式Z坐标最大值（支持统一偏移）
+RANDOM_INIT_GRIPPER_OPEN = True      # 🔥 初始化时夹爪是否张开 (True=张开, False=闭合)
+RANDOM_INIT_MOVE_STEPS = 75          # 🔥 平滑移动到随机位置的步数（约7.5秒，20Hz）(Steps for smooth move to random position)
+
+# ====== 🎲 Object Initialization Parameters (物体初始化参数) ======
+# 这些参数用于控制红色杯子的随机初始化（与V2一致）
+
+# --- 机械臂基座位置 ---
+ARM_BASE_X = 0.0                     # 机械臂基座X坐标 (Arm base X position, 与V2一致)
+ARM_BASE_Y = 0.0                     # 机械臂基座Y坐标 (Arm base Y position, 与V2一致)
+
+# --- 桌面参数 ---
+TABLE_Z_HEIGHT = 0.325 + V6_Z_OFFSET  # 桌面高度（杯子初始化Z高度，支持统一偏移）
+
+# --- 桌面范围限制（与V2一致）---
+TABLE_X_MIN = 0                   # 桌面X轴最小值 (Table X min boundary)
+TABLE_X_MAX = 1.5                  # 桌面X轴最大值 (Table X max boundary)
+TABLE_Y_MIN = -0.1                  # 桌面Y轴最小值 (Table Y min boundary)
+TABLE_Y_MAX = 1                   # 桌面Y轴最大值 (Table Y max boundary)
+
+# --- 🔥 红色和蓝色杯子初始化参数（两个弧线段）---
+# 弧线段1：距离机械臂基座0.3米，角度从0度到向右45度
+MUG_ARC1_RADIUS = 0.25                # 弧线段1的半径（米）(Arc 1 radius in meters)
+MUG_ARC1_ANGLE_MIN = 0.0            # 弧线段1的最小角度（度）(Arc 1 min angle in degrees, 0° = 正前方)
+MUG_ARC1_ANGLE_MAX = 45.0           # 弧线段1的最大角度（度）(Arc 1 max angle in degrees, 45° = 右偏45度)
+
+# 弧线段2：距离机械臂基座0.4米，角度从0度到向右30度
+MUG_ARC2_RADIUS = 0.35                # 弧线段2的半径（米）(Arc 2 radius in meters)
+MUG_ARC2_ANGLE_MIN = 0.0            # 弧线段2的最小角度（度）(Arc 2 min angle in degrees, 0° = 正前方)
+MUG_ARC2_ANGLE_MAX = 45.0           # 弧线段2的最大角度（度）(Arc 2 max angle in degrees, 30° = 右偏30度)
+
+# --- 🔥 红色和蓝色杯子间距参数 ---
+MUG_MIN_SPACING = 0.15              # 红色和蓝色杯子之间的最小间隔（米）(Min spacing between red and blue mugs, 5cm)
+
+# --- 以下参数保留用于夹爪随机初始化逻辑（V1版本仍使用扇形区域）---
+MUG_MIN_DIST = 0.30                  # 离机械臂基座最近距离（米）(Min distance from arm base) - 用于V1随机初始化
+MUG_MAX_DIST = 0.40                  # 离机械臂基座最远距离（米）(Max distance from arm base) - 用于V1随机初始化
+MUG_MIN_ANGLE = 0.0                  # 左偏角度（度）(Min angle in degrees, 0° = 正前方) - 用于V1随机初始化
+MUG_MAX_ANGLE = 45.0                 # 右偏角度（度）(Max angle in degrees, 45° = 右偏45度) - 用于V1随机初始化
+
+# --- 隐藏物体参数 ---
+HIDDEN_OBJ_X = 20.0                  # 隐藏物体的X坐标（远离场景）
+HIDDEN_OBJ_Y_INTERVAL = 0.5          # 隐藏物体沿Y轴的间隔（米）
+HIDDEN_OBJ_Z = 1.0                   # 隐藏物体的Z坐标（高度）
+
+NAV_INSTRUCTIONS = [
+    # 基础指令 (Basic)
+    "Go to the workbench.",
+    "Drive to the workbench."
+]
+
+# 🔥 任务指令：支持红色和蓝色杯子
+ARM_INSTRUCTIONS = [
+    "Place the red mug on the plate.",
+    "Place the blue mug on the plate."
+]
+
+class SimpleEnv6:
     def __init__(self, xml_path, action_type='eef_pose', state_type='joint_angle', seed=None, 
                  random_init_enabled=False, random_init_gripper_open=True, select_smaller_angle_mug=False,
                  tb3_x_gaussian_enabled=True, tb3_x_center=TB3_X_CENTER,
@@ -880,22 +1370,6 @@ class SimpleEnv7:
             return None
         return np.array([tb3_pos[0], tb3_pos[1] - 0.06, 0.49], dtype=np.float32)
 
-    def _select_mug_by_smaller_angle(self):
-        """选择偏转角度更小的杯子，返回 (obj_target, target_color, instruction)"""
-        red_mug_pos = self.env.get_p_body('body_obj_mug_5')
-        blue_mug_pos = self.env.get_p_body('body_obj_mug_6')
-        
-        red_rel_pos = red_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
-        blue_rel_pos = blue_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
-        
-        red_angle = np.arctan2(red_rel_pos[1], red_rel_pos[0])
-        blue_angle = np.arctan2(blue_rel_pos[1], blue_rel_pos[0])
-        
-        if abs(red_angle) <= abs(blue_angle):
-            return 'body_obj_mug_5', 'red', "Place the red mug on the plate."
-        else:
-            return 'body_obj_mug_6', 'blue', "Place the blue mug on the plate."
-
     def set_instruction(self, given=None, task_type=None):
         """
         设置任务指令（支持红色和蓝色杯子）
@@ -934,7 +1408,36 @@ class SimpleEnv7:
                 # 🔥 如果启用了选择偏转角度更小的杯子模式
                 if self.select_smaller_angle_mug:
                     try:
-                        self.obj_target, self.target_color, self.instruction = self._select_mug_by_smaller_angle()
+                        # 获取两个杯子的位置
+                        red_mug_pos = self.env.get_p_body('body_obj_mug_5')
+                        blue_mug_pos = self.env.get_p_body('body_obj_mug_6')
+                        
+                        # 🔥 只计算偏转角度，不计算距离
+                        # 计算相对于机械臂基座的位置向量（仅用于计算角度）
+                        red_rel_pos = red_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
+                        blue_rel_pos = blue_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
+                        
+                        # 🔥 计算偏转角度（弧度），使用 atan2(y, x)
+                        # atan2 返回从 x 轴正方向（正前方）到点 (x,y) 的角度
+                        # 范围 [-π, π]，0 表示正前方，正值表示右侧，负值表示左侧
+                        red_angle = np.arctan2(red_rel_pos[1], red_rel_pos[0])
+                        blue_angle = np.arctan2(blue_rel_pos[1], blue_rel_pos[0])
+                        
+                        # 🔥 只比较角度绝对值，选择更接近正前方（角度更小）的杯子
+                        # 注意：这里只比较角度，不比较距离
+                        red_angle_abs = abs(red_angle)
+                        blue_angle_abs = abs(blue_angle)
+                        
+                        if red_angle_abs <= blue_angle_abs:
+                            # 红色杯子角度更小（更接近正前方）
+                            self.obj_target = 'body_obj_mug_5'
+                            self.target_color = 'red'
+                            self.instruction = "Place the red mug on the plate."
+                        else:
+                            # 蓝色杯子角度更小（更接近正前方）
+                            self.obj_target = 'body_obj_mug_6'
+                            self.target_color = 'blue'
+                            self.instruction = "Place the blue mug on the plate."
                     except Exception as e:
                         # 如果获取位置失败，回退到随机选择
                         print(f"⚠️ Warning: Failed to get mug positions for angle selection: {e}. Falling back to random selection.")
@@ -977,7 +1480,38 @@ class SimpleEnv7:
                 # 🔥 如果启用了选择偏转角度更小的杯子模式，忽略指令中的颜色，直接选择角度更小的
                 if enable_smaller_angle_selection and not is_tray_to_table_instruction:
                     try:
-                        self.obj_target, self.target_color, self.instruction = self._select_mug_by_smaller_angle()
+                        # 获取两个杯子的位置
+                        red_mug_pos = self.env.get_p_body('body_obj_mug_5')
+                        blue_mug_pos = self.env.get_p_body('body_obj_mug_6')
+                        
+                        # 🔥 只计算偏转角度，不计算距离
+                        # 计算相对于机械臂基座的位置向量（仅用于计算角度）
+                        red_rel_pos = red_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
+                        blue_rel_pos = blue_mug_pos[:2] - np.array([ARM_BASE_X, ARM_BASE_Y])
+                        
+                        # 🔥 计算偏转角度（弧度），使用 atan2(y, x)
+                        # atan2 返回从 x 轴正方向（正前方）到点 (x,y) 的角度
+                        # 范围 [-π, π]，0 表示正前方，正值表示右侧，负值表示左侧
+                        red_angle = np.arctan2(red_rel_pos[1], red_rel_pos[0])
+                        blue_angle = np.arctan2(blue_rel_pos[1], blue_rel_pos[0])
+                        
+                        # 🔥 只比较角度绝对值，选择更接近正前方（角度更小）的杯子
+                        # 注意：这里只比较角度，不比较距离
+                        red_angle_abs = abs(red_angle)
+                        blue_angle_abs = abs(blue_angle)
+                        
+                        if red_angle_abs <= blue_angle_abs:
+                            # 红色杯子角度更小（更接近正前方）
+                            self.obj_target = 'body_obj_mug_5'
+                            self.target_color = 'red'
+                            # 更新指令文本以匹配选择
+                            self.instruction = "Place the red mug on the plate."
+                        else:
+                            # 蓝色杯子角度更小（更接近正前方）
+                            self.obj_target = 'body_obj_mug_6'
+                            self.target_color = 'blue'
+                            # 更新指令文本以匹配选择
+                            self.instruction = "Place the blue mug on the plate."
                     except Exception as e:
                         # 如果获取位置失败，回退到按指令解析
                         print(f"⚠️ Warning: Failed to get mug positions for angle selection: {e}. Falling back to instruction parsing.")
@@ -1052,91 +1586,6 @@ class SimpleEnv7:
     def step_env(self):
         full_ctrl = np.concatenate([self.current_arm_q, self.current_wheel_vel])
         self.env.step(full_ctrl)
-        self._enforce_cup_tray_lock()
-        
-    def _enforce_cup_tray_lock(self):
-        """
-        当杯子在小车的推盘上时，锁定它的相对位置，防止倒下或滑落。
-        """
-        try:
-            p_tb3, R_tb3 = self.env.get_pR_body('tb3_base')
-            p_tcp = self.env.get_p_body('tcp_link')
-            
-            if not hasattr(self, 'locked_cup_info'):
-                self.locked_cup_info = {}
-                
-            for mug_name in ['body_obj_mug_5', 'body_obj_mug_6']:
-                p_mug, R_mug = self.env.get_pR_body(mug_name)
-                
-                xy_dist = np.linalg.norm(p_mug[:2] - p_tb3[:2])
-                z_diff = p_mug[2] - p_tb3[2]
-                tcp_dist = np.linalg.norm(p_mug - p_tcp)
-                
-                # 判断杯子是否在托盘上且机械臂不在抓取
-                # 托盘高度大约 0.49，杯子中心高度可能在 0.49 左右
-                on_tray = (xy_dist < 0.15) and (0.45 < z_diff < 0.55)
-                arm_away = (tcp_dist > 0.1)
-                
-                if on_tray and arm_away:
-                    if mug_name not in self.locked_cup_info:
-                        # 刚放到托盘上，记录相对位置和姿态
-                        rel_p = R_tb3.T @ (p_mug - p_tb3)
-                        rel_R = R_tb3.T @ R_mug
-                        self.locked_cup_info[mug_name] = {'rel_p': rel_p, 'rel_R': rel_R}
-                    else:
-                        # 已经锁定，强制更新位置
-                        info = self.locked_cup_info[mug_name]
-                        target_p = p_tb3 + R_tb3 @ info['rel_p']
-                        target_R = R_tb3 @ info['rel_R']
-                        
-                        self.env.set_p_base_body(body_name=mug_name, p=target_p)
-                        self.env.set_R_base_body(body_name=mug_name, R=target_R)
-                        
-                        # 尝试将速度清零以防物理引擎积分出大速度
-                        try:
-                            joint_id = self.env.model.body(mug_name).jntadr[0]
-                            qvel_adr = self.env.model.jnt_dofadr[joint_id]
-                            self.env.data.qvel[qvel_adr:qvel_adr+6] = 0.0
-                        except:
-                            pass
-                else:
-                    if mug_name in self.locked_cup_info:
-                        # 离开托盘或机械臂靠近，解除锁定
-                        del self.locked_cup_info[mug_name]
-        except Exception as e:
-            pass
-
-    def teleport_base_and_cups(self, x, y, z, yaw_deg):
-        """
-        传送小车到指定位置。如果杯子在托盘上（已锁定），则连同杯子一起传送。
-        """
-        yaw_rad = np.deg2rad(yaw_deg)
-        new_p = np.array([x, y, z], dtype=np.float32)
-        from mujoco_env.transforms import rpy2r
-        new_R = rpy2r(np.array([0, 0, yaw_rad]))
-        
-        # 如果杯子被锁定，先传送杯子
-        if hasattr(self, 'locked_cup_info'):
-            for mug_name, info in self.locked_cup_info.items():
-                target_p = new_p + new_R @ info['rel_p']
-                target_R = new_R @ info['rel_R']
-                self.env.set_p_base_body(body_name=mug_name, p=target_p)
-                self.env.set_R_base_body(body_name=mug_name, R=target_R)
-                try:
-                    joint_id = self.env.model.body(mug_name).jntadr[0]
-                    qvel_adr = self.env.model.jnt_dofadr[joint_id]
-                    self.env.data.qvel[qvel_adr:qvel_adr+6] = 0.0
-                except:
-                    pass
-                    
-        # 传送小车
-        self.env.set_pR_base_body(body_name='tb3_base', p=new_p, R=new_R)
-        try:
-            joint_id = self.env.model.body('tb3_base').jntadr[0]
-            qvel_adr = self.env.model.jnt_dofadr[joint_id]
-            self.env.data.qvel[qvel_adr:qvel_adr+6] = 0.0
-        except:
-            pass
     
     def smooth_return_home(self):
         """
@@ -2334,3 +2783,8 @@ class SimpleEnv7:
             pass  # 静默处理，避免影响渲染
                 
         self.env.render()
+
+
+# Backward-compatible alias for code that still imports SimpleEnv4 from this file.
+SimpleEnv4 = SimpleEnv6
+SimpleEnv7 = SimpleEnv6

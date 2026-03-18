@@ -26,6 +26,7 @@ import os
 import sys
 import time
 import csv
+import random
 from pathlib import Path
 
 # ==========================================
@@ -170,13 +171,92 @@ TB3_X_OFFSET_MAX = 0.10         # 偏移上限（米）
 # ==========================================
 # 🧭 部署侧文本任务指令组（左右方向键切换）
 # ==========================================
-from mujoco_env.instruction_utils import (
-    INSTRUCTION_GROUPS,
-    validate_instruction_groups as _validate_instruction_groups,
-    get_group_info as _get_group_info,
-    pick_instruction_from_active_group as _pick_instruction_from_active_group,
-    apply_instruction_from_group as _apply_instruction_from_group,
-)
+# 说明：
+# - arm/base 各自维护独立的“指令组”
+# - 每个组包含多条文本任务
+# - 推理输入使用当前组内随机抽样结果（尽量避免与上一条重复）
+INSTRUCTION_GROUPS = {
+    'arm': [
+        {
+            'name': 'arm_default',
+            'instructions': [
+                "Place the red mug on the plate.",
+                "Place the blue mug on the plate.",
+            ],
+        },
+                {
+            'name': 'arm_01',
+            'instructions': [
+                "Take the red mug from the tray to the table.",
+                "Take the blue mug from the tray to the table.",
+            ],
+        },
+    ],
+    'base': [
+        {
+            'name': 'base_0',
+            'instructions': [
+                "Go to the workbench.",
+                "Drive to the workbench.",
+            ],
+        },
+        {
+            'name': 'base_1',
+            'instructions': [
+                "Move to the kitchen refrigerator.",
+
+            ],
+        },
+    ],
+}
+
+
+def _validate_instruction_groups():
+    for mode in ('arm', 'base'):
+        groups = INSTRUCTION_GROUPS.get(mode, [])
+        if len(groups) == 0:
+            raise ValueError(f"INSTRUCTION_GROUPS['{mode}'] cannot be empty.")
+        for group in groups:
+            name = group.get('name', '<unnamed>')
+            instructions = group.get('instructions', [])
+            if len(instructions) == 0:
+                raise ValueError(f"Instruction group '{name}' in mode '{mode}' has no instructions.")
+
+
+def _get_group_info(mode, group_indices):
+    groups = INSTRUCTION_GROUPS[mode]
+    total = len(groups)
+    idx = group_indices[mode] % total
+    group = groups[idx]
+    group_name = group.get('name', f'{mode}_group_{idx + 1}')
+    instructions = list(group.get('instructions', []))
+    return idx, total, group_name, instructions
+
+
+def _pick_instruction_from_active_group(mode, group_indices, last_instruction_by_mode):
+    _, _, _, instructions = _get_group_info(mode, group_indices)
+    last_inst = last_instruction_by_mode.get(mode)
+    candidates = [inst for inst in instructions if inst != last_inst]
+    if len(candidates) == 0:
+        candidates = instructions
+    picked = random.choice(candidates)
+    last_instruction_by_mode[mode] = picked
+    return picked
+
+
+def _apply_instruction_from_group(PnPEnv, mode, group_indices, last_instruction_by_mode, log_prefix="", reinitialize_arm=False):
+    idx, total, group_name, _ = _get_group_info(mode, group_indices)
+    picked_instruction = _pick_instruction_from_active_group(mode, group_indices, last_instruction_by_mode)
+    task_type = 'arm' if mode == 'arm' else 'nav'
+    PnPEnv.set_instruction(given=picked_instruction, task_type=task_type)
+    if mode == 'arm' and reinitialize_arm:
+        PnPEnv.reset(mode='arm', preserve_instruction=True)
+    extra = f"{log_prefix} " if log_prefix else ""
+    print(
+        f"{extra}🧭 [{mode.upper()}] Instruction Group: {group_name} "
+        f"({idx + 1}/{total}) | Task: {PnPEnv.instruction}"
+    )
+
 
 # 导入 LeRobot 和 MuJoCo 环境
 try:
@@ -425,52 +505,41 @@ class BaseActionPostProcessor:
 
 
 # ==========================================
-# 🔥 异步推理运行器 - 通用版本
+# 🔥 异步推理运行器 - Arm 模式
 # ==========================================
-class AsyncInferenceRunner:
-    """通用异步推理运行器（ARM/BASE 参数化）。"""
-    def __init__(
-        self,
-        policy,
-        device,
-        img_transform,
-        control_dt,
-        camera_keys,
-        mode_label,
-        mode_emoji,
-        config,
-        action_horizon,
-        chunk_threshold,
-        perf_monitor=None,
-    ):
+class AsyncArmInferenceRunner:
+    """
+    Arm 模式的异步推理运行器
+    - 输入: 2个相机(agent/wrist) + 6维关节角度
+    - 输出: 7维动作 (6关节角度 + 1夹爪状态)
+    
+    🔥 关键：ARM 模式使用顺序执行而非延迟补偿
+    因为 ARM 的动作是绝对关节角度，跳帧会导致位置突变
+    """
+    def __init__(self, policy, device, img_transform, control_dt, perf_monitor=None):
         self.policy = policy
         self.device = device
         self.img_transform = img_transform
         self.control_dt = control_dt
-        self.camera_keys = tuple(camera_keys)
-        self.mode_label = mode_label
-        self.mode_emoji = mode_emoji
-        self.action_horizon = action_horizon
-        self.chunk_threshold = chunk_threshold
         self.perf_monitor = perf_monitor
-        self.image_size = config['image_size']
+        self.image_size = ARM_CONFIG['image_size']
         
         # 线程同步锁
         self.lock = threading.Lock()
         
         # 共享数据：输入
-        self.latest_raw_images = None
-        self.latest_state = None
+        self.latest_raw_images = None  # {'agent': np.array, 'wrist': np.array}
+        self.latest_state = None       # (6,) 关节角度
         self.latest_task = None        # 任务字符串列表
         self.latest_obs_timestamp = 0
         
         # 共享数据：输出
-        self.latest_action_chunk = None
+        self.latest_action_chunk = None  # (n_action_steps, 7)
         self.chunk_start_timestamp = 0
         
-        # 顺序执行计数器（替代延迟补偿）
+        # 🔥 顺序执行计数器（替代延迟补偿）
         self.current_step_index = 0
-        self.chunk_id = 0
+        self.chunk_id = 0  # 用于检测新 chunk
         
         # 推理频率控制
         self.last_processed_timestamp = 0
@@ -480,23 +549,25 @@ class AsyncInferenceRunner:
         self.thread = None
 
     def start(self):
+        # 🔥 防御性检查：如果有旧线程在运行，先停止它
         if self.running and self.thread and self.thread.is_alive():
-            print(f"⚠️ [{self.mode_label} AsyncRunner] 发现旧线程仍在运行，先停止它")
+            print("⚠️ [ARM AsyncRunner] 发现旧线程仍在运行，先停止它")
             self.stop()
         
+        # 🔥 重置所有状态，确保每次启动都是干净的
         self.reset_state()
         
         self.running = True
         self.thread = threading.Thread(target=self._inference_loop, daemon=True)
         self.thread.start()
-        print(f"{self.mode_emoji} [{self.mode_label} AsyncRunner] 推理线程已启动 (状态已重置)")
+        print("🤖 [ARM AsyncRunner] 推理线程已启动 (状态已重置)")
 
     def stop(self):
         self.running = False
         if self.thread:
             self.thread.join(timeout=2.0)
             self.thread = None
-        print(f"🛑 [{self.mode_label} AsyncRunner] 推理线程已停止")
+        print("🛑 [ARM AsyncRunner] 推理线程已停止")
     
     def reset_state(self):
         """重置所有状态（不停止线程）- 可在环境重置时调用"""
@@ -537,7 +608,13 @@ class AsyncInferenceRunner:
     def get_action_at_time(self, current_time):
         """
         主线程调用：顺序获取下一个动作（不使用延迟补偿）
-        返回: (action, status_msg)
+        
+        🔥 ARM 模式特殊处理：
+        - 不根据时间差跳帧，而是顺序执行每一帧
+        - 只执行 chunk 的前 ACTION_HORIZON 步，然后等待新推理
+        - 这样可以减少 chunk 之间的不连续性（颤抖）
+        
+        返回: (action, status_msg) 其中 action 是 (7,) 数组或 None
         """
         with self.lock:
             if self.latest_action_chunk is None:
@@ -547,15 +624,282 @@ class AsyncInferenceRunner:
             chunk_len = chunk.shape[0]
             step_index = self.current_step_index
             
-            effective_horizon = min(self.action_horizon, chunk_len)
+            # 🔥 使用 ACTION_HORIZON 限制实际执行的步数
+            effective_horizon = min(ACTION_HORIZON, chunk_len)
+            
+            if step_index < effective_horizon:
+                # 正常执行：返回当前帧，计数器+1
+                action = chunk[step_index]
+                self.current_step_index += 1
+                return action, f"OK (Step {step_index}/{effective_horizon})"
+            else:
+                # 已执行 ACTION_HORIZON 步：保持最后一帧的动作，等待新 chunk
+                last_idx = effective_horizon - 1 if effective_horizon > 0 else 0
+                return chunk[last_idx], f"Hold (Horizon {effective_horizon} reached)"
+
+    def _inference_loop(self):
+        """后台线程：执行推理"""
+        # 🔥 ARM 模式：只在 chunk 快用完时才开始新推理
+        # CHUNK_THRESHOLD 已在文件开头定义
+        
+        while self.running:
+            t_lock_start = time.perf_counter()
+            raw_images = None
+            state = None
+            task = None
+            obs_timestamp = 0
+            
+            with self.lock:
+                t_lock_read = time.perf_counter()
+                if self.perf_monitor:
+                    self.perf_monitor.record_inference('lock_read', t_lock_read - t_lock_start)
+                
+                if self.latest_raw_images is not None:
+                    # 🔥 检查是否需要新推理：
+                    # 1. 首次推理（latest_action_chunk 为 None）
+                    # 2. 当前 horizon 快用完了（剩余帧数 <= CHUNK_THRESHOLD）
+                    need_inference = False
+                    if self.latest_action_chunk is None:
+                        need_inference = True
+                    else:
+                        chunk_len = self.latest_action_chunk.shape[0]
+                        effective_horizon = min(ACTION_HORIZON, chunk_len)
+                        remaining_steps = effective_horizon - self.current_step_index
+                        if remaining_steps <= CHUNK_THRESHOLD:
+                            need_inference = True
+                    
+                    if need_inference and self.latest_obs_timestamp > self.last_processed_timestamp:
+                        raw_images = self.latest_raw_images
+                        state = self.latest_state
+                        task = self.latest_task
+                        obs_timestamp = self.latest_obs_timestamp
+                        self.last_processed_timestamp = obs_timestamp
+                    else:
+                        raw_images = None
+            
+            if raw_images is None:
+                time.sleep(0.001)
+                continue
+            
+            t_inference_start = time.perf_counter()
+            try:
+                # 图像预处理: resize
+                t0 = time.perf_counter()
+                agent_img = Image.fromarray(raw_images['agent']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
+                wrist_img = Image.fromarray(raw_images['wrist']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
+                t1 = time.perf_counter()
+                if self.perf_monitor:
+                    self.perf_monitor.record_inference('img_resize', t1 - t0)
+                
+                # ToTensor
+                t0 = time.perf_counter()
+                agent_t = self.img_transform(agent_img).unsqueeze(0)
+                wrist_t = self.img_transform(wrist_img).unsqueeze(0)
+                t1 = time.perf_counter()
+                if self.perf_monitor:
+                    self.perf_monitor.record_inference('img_totensor', t1 - t0)
+                
+                # .to(device)
+                t0 = time.perf_counter()
+                agent_tensor = agent_t.to(self.device)
+                wrist_tensor = wrist_t.to(self.device)
+                state_tensor = torch.tensor(np.array(state, dtype=np.float32)).unsqueeze(0).to(self.device)
+                t1 = time.perf_counter()
+                if self.perf_monitor:
+                    self.perf_monitor.record_inference('img_todevice', t1 - t0)
+                
+                # 构建 batch
+                batch = {
+                    'observation.state': state_tensor,
+                    'observation.images.agent': agent_tensor,
+                    'observation.images.wrist': wrist_tensor,
+                    'task': task
+                }
+                
+                # 执行推理
+                with torch.no_grad():
+                    t0 = time.perf_counter()
+                    batch = self.policy.normalize_inputs(batch)
+                    t1 = time.perf_counter()
+                    if self.perf_monitor:
+                        self.perf_monitor.record_inference('normalize_inputs', t1 - t0)
+                    
+                    t0 = time.perf_counter()
+                    images, img_masks = self.policy.prepare_images(batch)
+                    t1 = time.perf_counter()
+                    if self.perf_monitor:
+                        self.perf_monitor.record_inference('prepare_images', t1 - t0)
+                    
+                    t0 = time.perf_counter()
+                    state_processed = self.policy.prepare_state(batch)
+                    t1 = time.perf_counter()
+                    if self.perf_monitor:
+                        self.perf_monitor.record_inference('prepare_state', t1 - t0)
+                    
+                    t0 = time.perf_counter()
+                    lang_tokens, lang_masks = self.policy.prepare_language(batch)
+                    t1 = time.perf_counter()
+                    if self.perf_monitor:
+                        self.perf_monitor.record_inference('prepare_language', t1 - t0)
+                    
+                    t0 = time.perf_counter()
+                    actions = self.policy.model.sample_actions(
+                        images, img_masks, lang_tokens, lang_masks, state_processed
+                    )
+                    t1 = time.perf_counter()
+                    if self.perf_monitor:
+                        self.perf_monitor.record_inference('sample_actions', t1 - t0)
+                    
+                    t0 = time.perf_counter()
+                    original_action_dim = self.policy.config.action_feature.shape[0]
+                    actions = actions[:, :, :original_action_dim]
+                    actions = self.policy.unnormalize_outputs({"action": actions})["action"]
+                    
+                    if self.policy.config.adapt_to_pi_aloha:
+                        actions = self.policy._pi_aloha_encode_actions(actions)
+                    t1 = time.perf_counter()
+                    if self.perf_monitor:
+                        self.perf_monitor.record_inference('postprocess', t1 - t0)
+                
+                # 写入输出
+                chunk_np = actions[0].cpu().numpy()
+                t_inference_end = time.perf_counter()
+                if self.perf_monitor:
+                    self.perf_monitor.record_inference('total_inference', t_inference_end - t_inference_start)
+                
+                with self.lock:
+                    self.latest_action_chunk = chunk_np
+                    self.chunk_start_timestamp = obs_timestamp
+                    # 🔥 新 chunk 准备好时，重置顺序执行计数器
+                    self.current_step_index = 0
+                    self.chunk_id += 1
+                    
+            except Exception as e:
+                print(f"[ARM] Inference Error: {e}")
+                import traceback
+                traceback.print_exc()
+                time.sleep(0.1)
+
+
+# ==========================================
+# 🔥 异步推理运行器 - Base 模式
+# ==========================================
+class AsyncBaseInferenceRunner:
+    """
+    Base 模式的异步推理运行器
+    - 输入: 3个相机(front/left/right) + 2维轮速度
+    - 输出: 2维轮速度指令
+    """
+    def __init__(self, policy, device, img_transform, control_dt, perf_monitor=None):
+        self.policy = policy
+        self.device = device
+        self.img_transform = img_transform
+        self.control_dt = control_dt
+        self.perf_monitor = perf_monitor
+        self.image_size = BASE_CONFIG['image_size']
+        
+        # 线程同步锁
+        self.lock = threading.Lock()
+        
+        # 共享数据：输入
+        self.latest_raw_images = None  # {'front': np.array, 'left': np.array, 'right': np.array}
+        self.latest_state = None       # (2,) 轮速度
+        self.latest_task = None        # 任务字符串列表
+        self.latest_obs_timestamp = 0
+        
+        # 共享数据：输出
+        self.latest_action_chunk = None  # (n_action_steps, 2)
+        self.chunk_start_timestamp = 0
+        
+        # 顺序执行计数器（与 ARM 异步逻辑一致）
+        self.current_step_index = 0
+        self.chunk_id = 0
+        
+        # 推理频率控制
+        self.last_processed_timestamp = 0
+        
+        # 线程控制
+        self.running = False
+        self.thread = None
+
+    def start(self):
+        # 🔥 防御性检查：如果有旧线程在运行，先停止它
+        if self.running and self.thread and self.thread.is_alive():
+            print("⚠️ [BASE AsyncRunner] 发现旧线程仍在运行，先停止它")
+            self.stop()
+        
+        # 🔥 重置所有状态，确保每次启动都是干净的
+        self.reset_state()
+        
+        self.running = True
+        self.thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self.thread.start()
+        print("🚗 [BASE AsyncRunner] 推理线程已启动 (状态已重置)")
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2.0)
+            self.thread = None
+        print("🛑 [BASE AsyncRunner] 推理线程已停止")
+    
+    def reset_state(self):
+        """重置所有状态（不停止线程）- 可在环境重置时调用"""
+        with self.lock:
+            self.latest_raw_images = None
+            self.latest_state = None
+            self.latest_task = None
+            self.latest_obs_timestamp = 0
+            self.latest_action_chunk = None
+            self.chunk_start_timestamp = 0
+            self.current_step_index = 0
+            self.chunk_id = 0
+            self.last_processed_timestamp = 0
+
+    def update_observation(self, images_dict, state, task, timestamp):
+        """主线程调用：更新最新的观测数据"""
+        t0 = time.perf_counter()
+        
+        images_copy = {}
+        for key, value in images_dict.items():
+            if isinstance(value, np.ndarray):
+                images_copy[key] = value.copy()
+        
+        state_copy = np.array(state, copy=True) if state is not None else None
+        task_copy = task.copy() if isinstance(task, list) else task
+        
+        t1 = time.perf_counter()
+        if self.perf_monitor:
+            self.perf_monitor.record_main('data_copy', t1 - t0)
+        
+        with self.lock:
+            self.latest_raw_images = images_copy
+            self.latest_state = state_copy
+            self.latest_task = task_copy
+            self.latest_obs_timestamp = timestamp
+
+    def get_action_at_time(self, current_time):
+        """
+        主线程调用：顺序获取下一个动作（与 ARM 异步逻辑一致）
+        返回: (action, status_msg) 其中 action 是 (2,) 数组或 None
+        """
+        with self.lock:
+            if self.latest_action_chunk is None:
+                return None, "Wait for init"
+            
+            chunk = self.latest_action_chunk
+            chunk_len = chunk.shape[0]
+            step_index = self.current_step_index
+            effective_horizon = min(BASE_ACTION_HORIZON, chunk_len)
             
             if step_index < effective_horizon:
                 action = chunk[step_index]
                 self.current_step_index += 1
                 return action, f"OK (Step {step_index}/{effective_horizon})"
-            else:
-                last_idx = effective_horizon - 1 if effective_horizon > 0 else 0
-                return chunk[last_idx], f"Hold (Horizon {effective_horizon} reached)"
+            
+            # horizon 用完后保持最后一步，等待新 chunk
+            last_idx = effective_horizon - 1 if effective_horizon > 0 else 0
+            return chunk[last_idx], f"Hold (Horizon {effective_horizon} reached)"
 
     def _inference_loop(self):
         """后台线程：执行推理"""
@@ -577,9 +921,9 @@ class AsyncInferenceRunner:
                         need_inference = True
                     else:
                         chunk_len = self.latest_action_chunk.shape[0]
-                        effective_horizon = min(self.action_horizon, chunk_len)
+                        effective_horizon = min(BASE_ACTION_HORIZON, chunk_len)
                         remaining_steps = effective_horizon - self.current_step_index
-                        if remaining_steps <= self.chunk_threshold:
+                        if remaining_steps <= BASE_CHUNK_THRESHOLD:
                             need_inference = True
                     
                     if need_inference and self.latest_obs_timestamp > self.last_processed_timestamp:
@@ -597,44 +941,44 @@ class AsyncInferenceRunner:
             
             t_inference_start = time.perf_counter()
             try:
+                # 图像预处理: resize
                 t0 = time.perf_counter()
-                resized_images = {
-                    key: Image.fromarray(raw_images[key]).resize(
-                        (self.image_size, self.image_size),
-                        resample=Image.BILINEAR,
-                    )
-                    for key in self.camera_keys
-                }
+                front_img = Image.fromarray(raw_images['front']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
+                left_img = Image.fromarray(raw_images['left']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
+                right_img = Image.fromarray(raw_images['right']).resize((self.image_size, self.image_size), resample=Image.BILINEAR)
                 t1 = time.perf_counter()
                 if self.perf_monitor:
                     self.perf_monitor.record_inference('img_resize', t1 - t0)
                 
+                # ToTensor
                 t0 = time.perf_counter()
-                image_tensors = {
-                    key: self.img_transform(img).unsqueeze(0)
-                    for key, img in resized_images.items()
-                }
+                front_t = self.img_transform(front_img).unsqueeze(0)
+                left_t = self.img_transform(left_img).unsqueeze(0)
+                right_t = self.img_transform(right_img).unsqueeze(0)
                 t1 = time.perf_counter()
                 if self.perf_monitor:
                     self.perf_monitor.record_inference('img_totensor', t1 - t0)
                 
+                # .to(device)
                 t0 = time.perf_counter()
-                image_tensors = {
-                    key: tensor.to(self.device)
-                    for key, tensor in image_tensors.items()
-                }
+                front_tensor = front_t.to(self.device)
+                left_tensor = left_t.to(self.device)
+                right_tensor = right_t.to(self.device)
                 state_tensor = torch.tensor(np.array(state, dtype=np.float32)).unsqueeze(0).to(self.device)
                 t1 = time.perf_counter()
                 if self.perf_monitor:
                     self.perf_monitor.record_inference('img_todevice', t1 - t0)
                 
+                # 构建 batch
                 batch = {
                     'observation.state': state_tensor,
+                    'observation.images.front': front_tensor,
+                    'observation.images.left': left_tensor,
+                    'observation.images.right': right_tensor,
                     'task': task
                 }
-                for key, tensor in image_tensors.items():
-                    batch[f'observation.images.{key}'] = tensor
                 
+                # 执行推理
                 with torch.no_grad():
                     t0 = time.perf_counter()
                     batch = self.policy.normalize_inputs(batch)
@@ -691,7 +1035,7 @@ class AsyncInferenceRunner:
                     self.chunk_id += 1
                     
             except Exception as e:
-                print(f"[{self.mode_label}] Inference Error: {e}")
+                print(f"[BASE] Inference Error: {e}")
                 import traceback
                 traceback.print_exc()
                 time.sleep(0.1)
@@ -705,52 +1049,545 @@ def get_default_transform():
     return transforms.Compose([transforms.ToTensor()])
 
 
-from mujoco_env.visualization import (
-    extract_model_version,
-    ensure_step_log_header,
-    append_step_log,
-    plot_task_stats,
-    plot_tb3_init_stats,
-)
+def extract_model_version(model_path):
+    """
+    从模型路径中提取版本号后缀
+    
+    Args:
+        model_path: 模型路径，如 './ckpt/pi0_arm/pretrained_model_arm_v5_2_1'
+                   或 './ckpt/pi0_base/pretrained_model_ver_3/pretrained_model'
+    
+    Returns:
+        version_suffix: 版本号后缀，如 'arm_v5_2_1' 或 'ver_3'
+    """
+    from pathlib import Path
+    path = Path(model_path)
+    
+    # 如果路径以 /pretrained_model 结尾（没有版本号），取父目录名
+    if path.name == 'pretrained_model':
+        # 取父目录名，如 'pretrained_model_ver_3'
+        parent_name = path.parent.name
+        # 去掉 'pretrained_model_' 前缀
+        if parent_name.startswith('pretrained_model_'):
+            return parent_name[len('pretrained_model_'):]
+        return parent_name
+    else:
+        # 取最后一部分，如 'pretrained_model_arm_v5_2_1'
+        name = path.name
+        # 去掉 'pretrained_model_' 前缀
+        if name.startswith('pretrained_model_'):
+            return name[len('pretrained_model_'):]
+        return name
 
-def load_policy(config, device, label, emoji='🤖'):
-    """加载 pi0 模型（ARM / BASE 通用）"""
+
+def ensure_step_log_header(log_path):
+    """确保步数日志文件存在并写入表头"""
+    log_file = Path(log_path)
+    if not log_file.exists():
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'timestamp', 'mode', 'result', 'steps',
+                'target_color', 'cup_init_x', 'cup_init_y', 'cup_init_z'
+            ])
+
+
+def append_step_log(log_path, mode, result, steps, target_color, cup_init):
+    """追加一行任务结果到步数日志"""
+    ensure_step_log_header(log_path)
+    with open(log_path, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            time.strftime('%Y-%m-%d %H:%M:%S'),
+            mode, result, steps,
+            target_color,
+            f"{cup_init[0]:.6f}", f"{cup_init[1]:.6f}", f"{cup_init[2]:.6f}"
+        ])
+
+
+def plot_task_stats(stats, output_dir, success_count=0, fail_count=0, version_suffix=''):
+    """
+    绘制成功任务中目标杯子初始位置分布图
+    stats: {'red': {'x': [], 'y': [], 'z': []}, 'blue': {...}}
+    success_count: 成功任务数量
+    fail_count: 失败任务数量
+    version_suffix: 版本号后缀，用于文件名，如 'arm_v5_2_1'
+    """
+    red_x = np.array(stats['red']['x'])
+    red_y = np.array(stats['red']['y'])
+    red_z = np.array(stats['red']['z'])
+    blue_x = np.array(stats['blue']['x'])
+    blue_y = np.array(stats['blue']['y'])
+    blue_z = np.array(stats['blue']['z'])
+    grasp_y = np.array(stats['grasp_center_y'])
+    has_red = len(red_x) > 0
+    has_blue = len(blue_x) > 0
+
+    if not has_red and not has_blue:
+        print("⚠️ No successful task data to visualize.")
+        return
+
+    if has_red and has_blue:
+        fig = plt.figure(figsize=(18, 14))
+        ax1 = plt.subplot(3, 3, 1)
+        plt.hist(red_x, bins=30, alpha=0.7, color='red', edgecolor='black')
+        plt.axvline(red_x.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {red_x.mean():.3f}')
+        plt.axvline(np.median(red_x), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(red_x):.3f}')
+        plt.xlabel('X Position (m)')
+        plt.ylabel('Count')
+        plt.title('Red Cup X Position Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        ax2 = plt.subplot(3, 3, 2)
+        plt.hist(red_y, bins=30, alpha=0.7, color='red', edgecolor='black')
+        plt.axvline(red_y.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {red_y.mean():.3f}')
+        plt.axvline(np.median(red_y), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(red_y):.3f}')
+        plt.xlabel('Y Position (m)')
+        plt.ylabel('Count')
+        plt.title('Red Cup Y Position Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        ax3 = plt.subplot(3, 3, 3)
+        plt.hist(red_z, bins=30, alpha=0.7, color='red', edgecolor='black')
+        plt.axvline(red_z.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {red_z.mean():.3f}')
+        plt.axvline(np.median(red_z), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(red_z):.3f}')
+        plt.xlabel('Z Position (m)')
+        plt.ylabel('Count')
+        plt.title('Red Cup Z Position Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        ax4 = plt.subplot(3, 3, 4)
+        plt.hist(blue_x, bins=30, alpha=0.7, color='blue', edgecolor='black')
+        plt.axvline(blue_x.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {blue_x.mean():.3f}')
+        plt.axvline(np.median(blue_x), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(blue_x):.3f}')
+        plt.xlabel('X Position (m)')
+        plt.ylabel('Count')
+        plt.title('Blue Cup X Position Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        ax5 = plt.subplot(3, 3, 5)
+        plt.hist(blue_y, bins=30, alpha=0.7, color='blue', edgecolor='black')
+        plt.axvline(blue_y.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {blue_y.mean():.3f}')
+        plt.axvline(np.median(blue_y), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(blue_y):.3f}')
+        plt.xlabel('Y Position (m)')
+        plt.ylabel('Count')
+        plt.title('Blue Cup Y Position Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        ax6 = plt.subplot(3, 3, 6)
+        plt.hist(blue_z, bins=30, alpha=0.7, color='blue', edgecolor='black')
+        plt.axvline(blue_z.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {blue_z.mean():.3f}')
+        plt.axvline(np.median(blue_z), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(blue_z):.3f}')
+        plt.xlabel('Z Position (m)')
+        plt.ylabel('Count')
+        plt.title('Blue Cup Z Position Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        ax7 = plt.subplot(3, 3, 7)
+        plt.scatter(red_x, red_y, alpha=0.5, s=20, color='red', label='Red Cup')
+        plt.scatter(blue_x, blue_y, alpha=0.5, s=20, color='blue', label='Blue Cup')
+        plt.xlabel('X Position (m)')
+        plt.ylabel('Y Position (m)')
+        plt.title('X-Y Position Scatter (Red vs Blue)')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.axis('equal')
+
+        ax8 = plt.subplot(3, 3, 8, projection='polar')
+        arm_base_x = 0.0
+        arm_base_y = 0.0
+        dx_red = red_x - arm_base_x
+        dy_red = red_y - arm_base_y
+        dx_blue = blue_x - arm_base_x
+        dy_blue = blue_y - arm_base_y
+        plt.scatter(np.arctan2(dy_red, dx_red), np.sqrt(dx_red**2 + dy_red**2),
+                    alpha=0.5, s=20, color='red', label='Red')
+        plt.scatter(np.arctan2(dy_blue, dx_blue), np.sqrt(dx_blue**2 + dy_blue**2),
+                    alpha=0.5, s=20, color='blue', label='Blue')
+        plt.title('Polar Position (relative to arm base)')
+        plt.legend(loc='upper right')
+        plt.grid(True, alpha=0.3)
+
+        ax9 = plt.subplot(3, 3, 9)
+        if len(grasp_y) > 0:
+            plt.hist(grasp_y, bins=30, alpha=0.7, color='orange', edgecolor='black')
+            plt.axvline(grasp_y.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {grasp_y.mean():.3f}')
+            plt.axvline(np.median(grasp_y), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(grasp_y):.3f}')
+            plt.xlabel(f'Grasp Center Y (Target Cup Y + {EXPERT_Y_GRASP_OFFSET:.3f}m)')
+            plt.ylabel('Count')
+            plt.title('Grasp Center Y Position Distribution')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+
+    else:
+        fig = plt.figure(figsize=(16, 10))
+        if has_red:
+            x, y, z, color, title_prefix = red_x, red_y, red_z, 'red', 'Red Cup'
+        else:
+            x, y, z, color, title_prefix = blue_x, blue_y, blue_z, 'blue', 'Blue Cup'
+
+        ax1 = plt.subplot(2, 3, 1)
+        plt.hist(y, bins=30, alpha=0.7, color=color, edgecolor='black')
+        plt.axvline(y.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {y.mean():.3f}')
+        plt.axvline(np.median(y), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(y):.3f}')
+        plt.xlabel(f'{title_prefix} Y Position (m)')
+        plt.ylabel('Count')
+        plt.title(f'{title_prefix} Y Position Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        ax2 = plt.subplot(2, 3, 2)
+        if len(grasp_y) > 0:
+            plt.hist(grasp_y, bins=30, alpha=0.7, color='orange', edgecolor='black')
+            plt.axvline(grasp_y.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {grasp_y.mean():.3f}')
+            plt.axvline(np.median(grasp_y), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(grasp_y):.3f}')
+        plt.xlabel(f'Grasp Center Y (Target Cup Y + {EXPERT_Y_GRASP_OFFSET:.3f}m)')
+        plt.ylabel('Count')
+        plt.title('Grasp Center Y Position Distribution')
+        if len(grasp_y) > 0:
+            plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        ax3 = plt.subplot(2, 3, 3)
+        plt.scatter(x, y, alpha=0.5, s=20, color=color)
+        plt.xlabel('X Position (m)')
+        plt.ylabel('Y Position (m)')
+        plt.title(f'{title_prefix} X-Y Position Scatter')
+        plt.grid(True, alpha=0.3)
+        plt.axis('equal')
+
+        ax4 = plt.subplot(2, 3, 4)
+        plt.hist(x, bins=30, alpha=0.7, color=color, edgecolor='black')
+        plt.axvline(x.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {x.mean():.3f}')
+        plt.axvline(np.median(x), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(x):.3f}')
+        plt.xlabel(f'{title_prefix} X Position (m)')
+        plt.ylabel('Count')
+        plt.title(f'{title_prefix} X Position Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        ax5 = plt.subplot(2, 3, 5)
+        plt.hist(z, bins=30, alpha=0.7, color=color, edgecolor='black')
+        plt.axvline(z.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {z.mean():.3f}')
+        plt.axvline(np.median(z), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(z):.3f}')
+        plt.xlabel(f'{title_prefix} Z Position (m)')
+        plt.ylabel('Count')
+        plt.title(f'{title_prefix} Z Position Distribution')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        ax6 = plt.subplot(2, 3, 6, projection='polar')
+        arm_base_x = 0.0
+        arm_base_y = 0.0
+        dx = x - arm_base_x
+        dy = y - arm_base_y
+        plt.scatter(np.arctan2(dy, dx), np.sqrt(dx**2 + dy**2),
+                    alpha=0.5, s=20, color=color)
+        plt.title(f'{title_prefix} Position (Polar, relative to arm base)')
+        plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 保存图片（添加版本号后缀）
+    if version_suffix:
+        img_filename = f'cup_position_analysis_{version_suffix}.png'
+    else:
+        img_filename = 'cup_position_analysis.png'
+    img_path = out_dir / img_filename
+    plt.savefig(img_path, dpi=150, bbox_inches='tight')
+    print(f"✅ Task stats visualization saved to: {img_path}")
+    
+    # 保存 JSON 统计文件
+    import json
+    from scipy import stats as scipy_stats
+    
+    json_stats = {
+        'total_episodes': len(red_x) + len(blue_x),
+        'red_cup_target_count': len(red_x),
+        'blue_cup_target_count': len(blue_x),
+        'unknown_target_count': 0,
+    }
+    
+    if has_red:
+        json_stats['red_cup'] = {
+            'x': {
+                'mean': float(red_x.mean()),
+                'std': float(red_x.std()),
+                'min': float(red_x.min()),
+                'max': float(red_x.max())
+            },
+            'y': {
+                'mean': float(red_y.mean()),
+                'std': float(red_y.std()),
+                'min': float(red_y.min()),
+                'max': float(red_y.max())
+            },
+            'z': {
+                'mean': float(red_z.mean()),
+                'std': float(red_z.std()),
+                'min': float(red_z.min()),
+                'max': float(red_z.max())
+            }
+        }
+        json_stats['red_cup_y_skewness'] = float(scipy_stats.skew(red_y))
+    
+    if has_blue:
+        json_stats['blue_cup'] = {
+            'x': {
+                'mean': float(blue_x.mean()),
+                'std': float(blue_x.std()),
+                'min': float(blue_x.min()),
+                'max': float(blue_x.max())
+            },
+            'y': {
+                'mean': float(blue_y.mean()),
+                'std': float(blue_y.std()),
+                'min': float(blue_y.min()),
+                'max': float(blue_y.max())
+            },
+            'z': {
+                'mean': float(blue_z.mean()),
+                'std': float(blue_z.std()),
+                'min': float(blue_z.min()),
+                'max': float(blue_z.max())
+            }
+        }
+        json_stats['blue_cup_y_skewness'] = float(scipy_stats.skew(blue_y))
+    
+    if len(grasp_y) > 0:
+        json_stats['grasp_center_y'] = {
+            'mean': float(grasp_y.mean()),
+            'std': float(grasp_y.std()),
+            'min': float(grasp_y.min()),
+            'max': float(grasp_y.max())
+        }
+    
+    # 🔥 添加成功率统计
+    total_tasks = success_count + fail_count
+    if total_tasks > 0:
+        json_stats['task_statistics'] = {
+            'total_tasks': total_tasks,
+            'success_count': success_count,
+            'fail_count': fail_count,
+            'success_rate': float(success_count / total_tasks * 100)
+        }
+    
+    # 保存 JSON 统计文件（添加版本号后缀）
+    if version_suffix:
+        json_filename = f'cup_position_stats_{version_suffix}.json'
+    else:
+        json_filename = 'cup_position_stats.json'
+    json_path = out_dir / json_filename
+    with open(json_path, 'w') as f:
+        json.dump(json_stats, f, indent=2)
+    print(f"✅ Task stats JSON saved to: {json_path}")
+    if total_tasks > 0:
+        print(f"   📊 Success Rate: {success_count}/{total_tasks} ({success_count/total_tasks*100:.1f}%)")
+
+
+def plot_tb3_init_stats(tb3_stats, output_dir, success_count=0, fail_count=0, version_suffix=''):
+    """
+    绘制成功任务中 TB3 初始坐标分布图
+    tb3_stats: {'x': [], 'y': [], 'z': []}
+    """
+    x = np.array(tb3_stats['x'])
+    y = np.array(tb3_stats['y'])
+    z = np.array(tb3_stats['z'])
+
+    if len(x) == 0:
+        print("⚠️ No successful TB3 init data to visualize.")
+        return
+
+    fig = plt.figure(figsize=(16, 10))
+
+    ax1 = plt.subplot(2, 3, 1)
+    plt.hist(x, bins=30, alpha=0.7, color='purple', edgecolor='black')
+    plt.axvline(x.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {x.mean():.3f}')
+    plt.axvline(np.median(x), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(x):.3f}')
+    plt.xlabel('TB3 Init X Position (m)')
+    plt.ylabel('Count')
+    plt.title('TB3 Init X Distribution')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    ax2 = plt.subplot(2, 3, 2)
+    plt.hist(y, bins=30, alpha=0.7, color='teal', edgecolor='black')
+    plt.axvline(y.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {y.mean():.3f}')
+    plt.axvline(np.median(y), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(y):.3f}')
+    plt.xlabel('TB3 Init Y Position (m)')
+    plt.ylabel('Count')
+    plt.title('TB3 Init Y Distribution')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    ax3 = plt.subplot(2, 3, 3)
+    plt.hist(z, bins=30, alpha=0.7, color='orange', edgecolor='black')
+    plt.axvline(z.mean(), color='blue', linestyle='--', linewidth=2, label=f'Mean: {z.mean():.3f}')
+    plt.axvline(np.median(z), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(z):.3f}')
+    plt.xlabel('TB3 Init Z Position (m)')
+    plt.ylabel('Count')
+    plt.title('TB3 Init Z Distribution')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    ax4 = plt.subplot(2, 3, 4)
+    plt.scatter(x, y, alpha=0.5, s=20, color='purple')
+    plt.xlabel('TB3 Init X Position (m)')
+    plt.ylabel('TB3 Init Y Position (m)')
+    plt.title('TB3 Init X-Y Scatter')
+    plt.grid(True, alpha=0.3)
+    plt.axis('equal')
+
+    ax5 = plt.subplot(2, 3, 5, projection='polar')
+    dx = x
+    dy = y
+    plt.scatter(np.arctan2(dy, dx), np.sqrt(dx**2 + dy**2), alpha=0.5, s=20, color='purple')
+    plt.title('TB3 Init Position (Polar)')
+    plt.grid(True, alpha=0.3)
+
+    ax6 = plt.subplot(2, 3, 6)
+    plt.axis('off')
+    total_tasks = success_count + fail_count
+    summary_lines = [
+        f"Samples (success only): {len(x)}",
+        f"X mean/std: {x.mean():.3f} / {x.std():.3f}",
+        f"Y mean/std: {y.mean():.3f} / {y.std():.3f}",
+        f"Z mean/std: {z.mean():.3f} / {z.std():.3f}",
+    ]
+    if total_tasks > 0:
+        summary_lines.append(f"Success rate: {success_count}/{total_tasks} ({success_count / total_tasks * 100:.1f}%)")
+    plt.text(0.0, 1.0, "\n".join(summary_lines), fontsize=12, va='top')
+    plt.title('TB3 Init Summary')
+
+    plt.tight_layout()
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if version_suffix:
+        img_filename = f'tb3_init_position_analysis_{version_suffix}.png'
+    else:
+        img_filename = 'tb3_init_position_analysis.png'
+    img_path = out_dir / img_filename
+    plt.savefig(img_path, dpi=150, bbox_inches='tight')
+    print(f"✅ TB3 init visualization saved to: {img_path}")
+
+    import json
+    json_stats = {
+        'successful_samples': len(x),
+        'tb3_init': {
+            'x': {'mean': float(x.mean()), 'std': float(x.std()), 'min': float(x.min()), 'max': float(x.max())},
+            'y': {'mean': float(y.mean()), 'std': float(y.std()), 'min': float(y.min()), 'max': float(y.max())},
+            'z': {'mean': float(z.mean()), 'std': float(z.std()), 'min': float(z.min()), 'max': float(z.max())},
+        },
+    }
+    if total_tasks > 0:
+        json_stats['task_statistics'] = {
+            'total_tasks': total_tasks,
+            'success_count': success_count,
+            'fail_count': fail_count,
+            'success_rate': float(success_count / total_tasks * 100),
+        }
+
+    if version_suffix:
+        json_filename = f'tb3_init_position_stats_{version_suffix}.json'
+    else:
+        json_filename = 'tb3_init_position_stats.json'
+    json_path = out_dir / json_filename
+    with open(json_path, 'w') as f:
+        json.dump(json_stats, f, indent=2)
+    print(f"✅ TB3 init JSON saved to: {json_path}")
+
+
+def load_arm_policy(device):
+    """加载 Arm 模式的 pi0 模型"""
     print("\n" + "="*60)
-    print(f"{emoji} Loading {label} Policy...")
-    print(f"   Dataset: {config['dataset_repo_id']}")
-    print(f"   Model: {config['model_path']}")
+    print("🤖 Loading ARM Policy...")
+    print(f"   Dataset: {ARM_CONFIG['dataset_repo_id']}")
+    print(f"   Model: {ARM_CONFIG['model_path']}")
     print("="*60)
-
+    
     try:
         dataset_metadata = LeRobotDatasetMetadata(
-            config['dataset_repo_id'],
-            root=config['dataset_root']
+            ARM_CONFIG['dataset_repo_id'], 
+            root=ARM_CONFIG['dataset_root']
         )
-
+        
         features = dataset_to_policy_features(dataset_metadata.features)
         output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
         input_features = {key: ft for key, ft in features.items() if key not in output_features}
-
+        
         cfg = PI0Config(
-            input_features=input_features,
-            output_features=output_features,
-            chunk_size=config['chunk_size'],
-            n_action_steps=config['n_action_steps']
+            input_features=input_features, 
+            output_features=output_features, 
+            chunk_size=ARM_CONFIG['chunk_size'], 
+            n_action_steps=ARM_CONFIG['n_action_steps']
         )
-
+        
         policy = PI0Policy.from_pretrained(
-            config['model_path'],
-            config=cfg,
+            ARM_CONFIG['model_path'], 
+            config=cfg, 
             dataset_stats=dataset_metadata.stats
         )
-
+        
         policy.to(device)
         policy.eval()
-        print(f"✅ {label} Policy Loaded Successfully!")
+        print("✅ ARM Policy Loaded Successfully!")
         return policy
-
+        
     except Exception as e:
-        print(f"❌ Failed to load {label} policy: {e}")
+        print(f"❌ Failed to load ARM policy: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def load_base_policy(device):
+    """加载 Base 模式的 pi0 模型"""
+    print("\n" + "="*60)
+    print("🚗 Loading BASE Policy...")
+    print(f"   Dataset: {BASE_CONFIG['dataset_repo_id']}")
+    print(f"   Model: {BASE_CONFIG['model_path']}")
+    print("="*60)
+    
+    try:
+        dataset_metadata = LeRobotDatasetMetadata(
+            BASE_CONFIG['dataset_repo_id'], 
+            root=BASE_CONFIG['dataset_root']
+        )
+        
+        features = dataset_to_policy_features(dataset_metadata.features)
+        output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
+        input_features = {key: ft for key, ft in features.items() if key not in output_features}
+        
+        cfg = PI0Config(
+            input_features=input_features, 
+            output_features=output_features, 
+            chunk_size=BASE_CONFIG['chunk_size'], 
+            n_action_steps=BASE_CONFIG['n_action_steps']
+        )
+        
+        policy = PI0Policy.from_pretrained(
+            BASE_CONFIG['model_path'], 
+            config=cfg, 
+            dataset_stats=dataset_metadata.stats
+        )
+        
+        policy.to(device)
+        policy.eval()
+        print("✅ BASE Policy Loaded Successfully!")
+        return policy
+        
+    except Exception as e:
+        print(f"❌ Failed to load BASE policy: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -809,12 +1646,12 @@ def main():
     base_policy = None
     
     if LOAD_ARM_MODEL:
-        arm_policy = load_policy(ARM_CONFIG, device, label='ARM', emoji='🤖')
+        arm_policy = load_arm_policy(device)
     else:
         print("\n⏭️  Skipping ARM model loading (LOAD_ARM_MODEL=False)")
-
+    
     if LOAD_BASE_MODEL:
-        base_policy = load_policy(BASE_CONFIG, device, label='BASE', emoji='🚗')
+        base_policy = load_base_policy(device)
     else:
         print("\n⏭️  Skipping BASE model loading (LOAD_BASE_MODEL=False)")
     
@@ -869,36 +1706,18 @@ def main():
         if ARM_SYNC_INFERENCE:
             print("🔄 [ARM] Using SYNC inference mode")
         else:
-            arm_runner = AsyncInferenceRunner(
-                arm_policy,
-                device,
-                IMG_TRANSFORM,
-                control_dt=CONTROL_DT,
-                camera_keys=['agent', 'wrist'],
-                mode_label='ARM',
-                mode_emoji='🤖',
-                config=ARM_CONFIG,
-                action_horizon=ACTION_HORIZON,
-                chunk_threshold=CHUNK_THRESHOLD,
-                perf_monitor=None,
+            arm_runner = AsyncArmInferenceRunner(
+                arm_policy, device, IMG_TRANSFORM,
+                control_dt=CONTROL_DT, perf_monitor=None
             )
             print("🔄 [ARM] Using ASYNC inference mode")
             print(f"   - ACTION_HORIZON: {ACTION_HORIZON}")
             print(f"   - CHUNK_THRESHOLD: {CHUNK_THRESHOLD}")
     
     if base_policy is not None:
-        base_runner = AsyncInferenceRunner(
-            base_policy,
-            device,
-            IMG_TRANSFORM,
-            control_dt=CONTROL_DT,
-            camera_keys=['front', 'left', 'right'],
-            mode_label='BASE',
-            mode_emoji='🚗',
-            config=BASE_CONFIG,
-            action_horizon=BASE_ACTION_HORIZON,
-            chunk_threshold=BASE_CHUNK_THRESHOLD,
-            perf_monitor=None,  # Base 模式不使用性能监控
+        base_runner = AsyncBaseInferenceRunner(
+            base_policy, device, IMG_TRANSFORM, 
+            control_dt=CONTROL_DT, perf_monitor=None  # Base 模式不使用性能监控
         )
         print("🔄 [BASE] Using ASYNC inference mode")
         print(f"   - BASE_ACTION_HORIZON: {BASE_ACTION_HORIZON}")
@@ -966,45 +1785,6 @@ def main():
         except Exception:
             return np.array([np.nan, np.nan, np.nan], dtype=np.float32)
 
-    def _perform_auto_reset(PnPEnv, control_mode, instruction_group_indices, last_instruction_by_mode, arm_runner, arm_policy, arm_smoother, auto_mode_arm):
-        """执行自动重置的通用逻辑"""
-        # 🔥 确保环境的随机初始化参数被正确设置（匹配数据采集脚本）
-        PnPEnv.random_init_enabled = RANDOM_INIT_ENABLED
-        PnPEnv.random_init_gripper_open = RANDOM_INIT_GRIPPER_OPEN
-        PnPEnv.tb3_x_gaussian_enabled = TB3_X_GAUSSIAN_ENABLED
-        PnPEnv.tb3_x_center = TB3_X_CENTER
-        PnPEnv.tb3_x_offset_std = TB3_X_OFFSET_STD
-        PnPEnv.tb3_x_offset_min = TB3_X_OFFSET_MIN
-        PnPEnv.tb3_x_offset_max = TB3_X_OFFSET_MAX
-
-        # 🔥 异步模式下先停推理线程，避免旧观测在 reset 后写回旧动作 chunk
-        if not ARM_SYNC_INFERENCE and arm_runner:
-            arm_runner.stop()
-        
-        # 🔥 重置policy和平滑器状态，确保不会使用旧状态
-        if arm_policy:
-            arm_policy.reset()
-        
-        if arm_runner:
-            arm_runner.reset_state()
-        arm_smoother.reset()
-        
-        _apply_instruction_from_group(
-            PnPEnv,
-            control_mode,
-            instruction_group_indices,
-            last_instruction_by_mode,
-            log_prefix="🔄 [AUTO-RESET]",
-            reinitialize_arm=(control_mode == 'arm'),
-        )
-        
-        if control_mode != 'arm':
-            PnPEnv.reset(mode=control_mode)
-            
-        # 🔥 reset 完成后重启异步推理线程，确保只消费新环境观测
-        if not ARM_SYNC_INFERENCE and arm_runner and auto_mode_arm:
-            arm_runner.start()
-
     task_start_time = time.time()
     task_start_step = step
     task_tb3_init = get_tb3_init_pose(PnPEnv)
@@ -1029,7 +1809,6 @@ def main():
     print("  [L] 🔥 Toggle Auto-Control + Auto-Detection (ARM mode only)")
     print("      → Press once to ENABLE: model auto-execute + auto-check success/fail + auto-reset")
     print("      → Press again to DISABLE")
-    print("  [G] Teleport Base (and cup if locked) to (4.25, 3.5, 0) yaw=-57.1")
     print("  [Q] Quit")
     print("="*70 + "\n")
     print(f"🎯 Current Mode: {control_mode.upper()}")
@@ -1244,11 +2023,6 @@ def main():
                     else:
                         print("\n⚠️ [L] Auto-control + Auto-detection only available in ARM mode.")
 
-                # G 键：传送小车和杯子
-                if PnPEnv.env.is_key_pressed_once(key=glfw.KEY_G):
-                    print("\n🚀 [G] Teleporting base and cup to (4.25, 3.5, 0) yaw=57.1")
-                    PnPEnv.teleport_base_and_cups(4.25, 3.5, 0.0, -57.1)
-                    
                 # --- 控制逻辑 ---
                 
                 if control_mode == 'arm':
@@ -1272,15 +2046,38 @@ def main():
                             task_success_count += 1
                             success_rate = (task_success_count / task_completed_count * 100) if task_completed_count > 0 else 0.0
                             print(f"\n✅ Task SUCCESS (Auto-detected). Task {task_completed_count}/{TASK_LOOP_COUNT if TASK_LOOP_COUNT > 0 else '∞'} | Success: {task_success_count}/{task_completed_count} ({success_rate:.1f}%). Resetting for next task...")
-                            
-                            _perform_auto_reset(
-                                PnPEnv, control_mode, instruction_group_indices,
-                                last_instruction_by_mode, arm_runner, arm_policy,
-                                arm_smoother, auto_mode_arm
-                            )
+                            # 🔥 确保环境的随机初始化参数被正确设置（匹配数据采集脚本）
+                            PnPEnv.random_init_enabled = RANDOM_INIT_ENABLED
+                            PnPEnv.random_init_gripper_open = RANDOM_INIT_GRIPPER_OPEN
+                            PnPEnv.tb3_x_gaussian_enabled = TB3_X_GAUSSIAN_ENABLED
+                            PnPEnv.tb3_x_center = TB3_X_CENTER
+                            PnPEnv.tb3_x_offset_std = TB3_X_OFFSET_STD
+                            PnPEnv.tb3_x_offset_min = TB3_X_OFFSET_MIN
+                            PnPEnv.tb3_x_offset_max = TB3_X_OFFSET_MAX
+                            # 🔥 异步模式下先停推理线程，避免旧观测在 reset 后写回旧动作 chunk
+                            if not ARM_SYNC_INFERENCE and arm_runner:
+                                arm_runner.stop()
+                            # 🔥 重置policy和平滑器状态，确保不会使用旧状态
+                            if arm_policy:
+                                arm_policy.reset()
                             arm_action_chunk = None
                             arm_chunk_step_index = 0
-                            
+                            if arm_runner:
+                                arm_runner.reset_state()
+                            arm_smoother.reset()
+                            _apply_instruction_from_group(
+                                PnPEnv,
+                                control_mode,
+                                instruction_group_indices,
+                                last_instruction_by_mode,
+                                log_prefix="🔄 [AUTO-RESET]",
+                                reinitialize_arm=(control_mode == 'arm'),
+                            )
+                            if control_mode != 'arm':
+                                PnPEnv.reset(mode=control_mode)
+                            # 🔥 reset 完成后重启异步推理线程，确保只消费新环境观测
+                            if not ARM_SYNC_INFERENCE and arm_runner and auto_mode_arm:
+                                arm_runner.start()
                             step = 0
                             reset_task_timer()
                             # 🔥 检查是否达到循环次数
@@ -1302,15 +2099,38 @@ def main():
                             task_fail_count += 1
                             success_rate = (task_success_count / task_completed_count * 100) if task_completed_count > 0 else 0.0
                             print(f"\n⏱️ Task TIMEOUT ({TASK_TIMEOUT_SEC}s). Task {task_completed_count}/{TASK_LOOP_COUNT if TASK_LOOP_COUNT > 0 else '∞'} | Success: {task_success_count}/{task_completed_count} ({success_rate:.1f}%). Resetting for next task...")
-                            
-                            _perform_auto_reset(
-                                PnPEnv, control_mode, instruction_group_indices,
-                                last_instruction_by_mode, arm_runner, arm_policy,
-                                arm_smoother, auto_mode_arm
-                            )
+                            # 🔥 确保环境的随机初始化参数被正确设置（匹配数据采集脚本）
+                            PnPEnv.random_init_enabled = RANDOM_INIT_ENABLED
+                            PnPEnv.random_init_gripper_open = RANDOM_INIT_GRIPPER_OPEN
+                            PnPEnv.tb3_x_gaussian_enabled = TB3_X_GAUSSIAN_ENABLED
+                            PnPEnv.tb3_x_center = TB3_X_CENTER
+                            PnPEnv.tb3_x_offset_std = TB3_X_OFFSET_STD
+                            PnPEnv.tb3_x_offset_min = TB3_X_OFFSET_MIN
+                            PnPEnv.tb3_x_offset_max = TB3_X_OFFSET_MAX
+                            # 🔥 异步模式下先停推理线程，避免旧观测在 reset 后写回旧动作 chunk
+                            if not ARM_SYNC_INFERENCE and arm_runner:
+                                arm_runner.stop()
+                            # 🔥 重置policy和平滑器状态，确保不会使用旧状态
+                            if arm_policy:
+                                arm_policy.reset()
                             arm_action_chunk = None
                             arm_chunk_step_index = 0
-                            
+                            if arm_runner:
+                                arm_runner.reset_state()
+                            arm_smoother.reset()
+                            _apply_instruction_from_group(
+                                PnPEnv,
+                                control_mode,
+                                instruction_group_indices,
+                                last_instruction_by_mode,
+                                log_prefix="🔄 [AUTO-RESET]",
+                                reinitialize_arm=(control_mode == 'arm'),
+                            )
+                            if control_mode != 'arm':
+                                PnPEnv.reset(mode=control_mode)
+                            # 🔥 reset 完成后重启异步推理线程，确保只消费新环境观测
+                            if not ARM_SYNC_INFERENCE and arm_runner and auto_mode_arm:
+                                arm_runner.start()
                             step = 0
                             reset_task_timer()
                             # 🔥 检查是否达到循环次数
@@ -1515,14 +2335,7 @@ def main():
             version_suffix = ''
             if LOAD_ARM_MODEL and ARM_CONFIG.get('model_path'):
                 version_suffix = extract_model_version(ARM_CONFIG['model_path'])
-            plot_task_stats(
-                task_stats,
-                TASK_STATS_OUTPUT_DIR,
-                task_success_count,
-                task_fail_count,
-                version_suffix=version_suffix,
-                grasp_y_offset=EXPERT_Y_GRASP_OFFSET,
-            )
+            plot_task_stats(task_stats, TASK_STATS_OUTPUT_DIR, task_success_count, task_fail_count, version_suffix=version_suffix)
             plot_tb3_init_stats(tb3_init_stats, TASK_STATS_OUTPUT_DIR, task_success_count, task_fail_count, version_suffix=version_suffix)
             # 打印最终统计信息
             print(f"\n📊 Final Statistics:")
