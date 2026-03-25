@@ -109,8 +109,8 @@ INITIAL_MODE = 'arm'                 # 启动时的模式: 'arm' 或 'base'
 # --- 📁 数据集名称与路径 ---
 ARM_DATASET_NAME = 'omy_arm_data_test'       # Arm 模式数据集名称
 ARM_DATASET_ROOT = './demo_data_arm_test'    # Arm 模式数据集保存路径
-BASE_DATASET_NAME = 'omy_base_data_test'     # Base 模式数据集名称
-BASE_DATASET_ROOT = './demo_data_base_test'  # Base 模式数据集保存路径
+BASE_DATASET_NAME = 'omy_base_data_RAG'     # Base 模式数据集名称
+BASE_DATASET_ROOT = './demo_data_base_RAG'  # Base 模式数据集保存路径
 
 # --- 🖼️ 图像与录制 ---
 IMG_SIZE = 224                       # 图像分辨率 (224=ViT标准, 256=兼容旧数据)

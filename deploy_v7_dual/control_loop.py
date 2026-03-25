@@ -29,6 +29,17 @@ from .config import (
     ARM_CONFIG,
     ARM_SYNC_INFERENCE,
     ARM_EXEC_HORIZON,
+    RAG_LOOKAHEAD_DIST,
+    RAG_LOOKAHEAD_MAX_OFFSET,
+    RAG_ARRIVE_THRESHOLD,
+    RAG_IDX_SCAN_WINDOW,
+    RAG_MAX_WHEEL_SPEED,
+    RAG_MIN_FWD_SPEED,
+    RAG_MAX_FWD_SPEED,
+    RAG_TURN_GAIN,
+    RAG_MAX_TURN_SPEED,
+    RAG_SLOWDOWN_RADIUS,
+    RAG_HEADING_DEADBAND,
 )
 from mujoco_env.visualization import (
     append_step_log,
@@ -373,3 +384,105 @@ def step_base_manual(state: DeployState, env, teleop, base_runner, base_postproc
 
     env.render(teleop=True, idx=state.step)
     state.step += 1
+
+
+def _wrap_to_pi(angle):
+    return (float(angle) + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def step_base_nav(state: DeployState, env):
+    """BASE RAG 导航步进：跟踪密集 waypoints 并输出左右轮速度。"""
+    if not state.nav_mode_active or len(state.nav_waypoints) == 0:
+        env.step(np.array([0.0, 0.0]), mode='base')
+        env.render(teleop=False, idx=state.step)
+        state.step += 1
+        return
+
+    p_tb3, R_tb3 = env.env.get_pR_body('tb3_base')
+    x = float(p_tb3[0])
+    y = float(p_tb3[1])
+    yaw = float(np.arctan2(float(R_tb3[1, 0]), float(R_tb3[0, 0])))
+    pos_xy = np.array([x, y], dtype=np.float64)
+
+    # 1) 推进“到达点”索引（在前瞻窗口内找“最远已到达点”，可跨过折叠段）
+    scan_end = min(
+        len(state.nav_waypoints) - 1,
+        int(state.nav_waypoint_index) + int(max(1, RAG_IDX_SCAN_WINDOW)),
+    )
+    furthest_reached_idx = int(state.nav_waypoint_index) - 1
+    for idx in range(int(state.nav_waypoint_index), scan_end + 1):
+        wp = state.nav_waypoints[idx]
+        wp_xy = np.array([float(wp[0]), float(wp[1])], dtype=np.float64)
+        if np.linalg.norm(wp_xy - pos_xy) <= RAG_ARRIVE_THRESHOLD:
+            furthest_reached_idx = idx
+    if furthest_reached_idx >= int(state.nav_waypoint_index):
+        state.nav_waypoint_index = furthest_reached_idx + 1
+
+    # 2) 到终点后停车并退出导航模式
+    if state.nav_waypoint_index >= len(state.nav_waypoints):
+        state.stop_navigation()
+        env.step(np.array([0.0, 0.0]), mode='base')
+        env.render(teleop=False, idx=state.step)
+        state.step += 1
+        print("\n✅ [RAG] Navigation reached final waypoint.")
+        return
+
+    # 3) 从当前索引往后找 lookahead 点（限制前瞻窗口，避免跨到远处回环段）
+    start_idx = int(state.nav_waypoint_index)
+    max_idx = min(
+        len(state.nav_waypoints) - 1,
+        start_idx + int(max(1, RAG_LOOKAHEAD_MAX_OFFSET)),
+    )
+
+    lookahead_idx = start_idx
+    found = False
+    while lookahead_idx <= max_idx:
+        wp = state.nav_waypoints[lookahead_idx]
+        wp_xy = np.array([float(wp[0]), float(wp[1])], dtype=np.float64)
+        if np.linalg.norm(wp_xy - pos_xy) >= RAG_LOOKAHEAD_DIST:
+            found = True
+            break
+        lookahead_idx += 1
+    if not found:
+        lookahead_idx = max_idx
+
+    target_wp = state.nav_waypoints[lookahead_idx]
+    target_xy = np.array([float(target_wp[0]), float(target_wp[1])], dtype=np.float64)
+    vec = target_xy - pos_xy
+    dist_to_target = float(np.linalg.norm(vec))
+    desired_yaw = float(np.arctan2(vec[1], vec[0]))
+    heading_error = _wrap_to_pi(desired_yaw - yaw)
+
+    # 当前跟踪点距离用于速度衰减（越接近越慢）
+    curr_wp = state.nav_waypoints[state.nav_waypoint_index]
+    curr_wp_xy = np.array([float(curr_wp[0]), float(curr_wp[1])], dtype=np.float64)
+    dist_to_current = float(np.linalg.norm(curr_wp_xy - pos_xy))
+
+    # 4) 稳态友好的 P 控制映射到差速轮
+    # 角度误差过大时先原地转向，避免贴近航点时“前冲+急转”抖动。
+    if abs(heading_error) > np.deg2rad(60.0):
+        v_forward = 0.0
+    else:
+        v_forward = float(np.clip(dist_to_current * 5.0, RAG_MIN_FWD_SPEED, RAG_MAX_FWD_SPEED))
+        heading_scale = float(np.clip(1.0 - abs(heading_error) / np.deg2rad(75.0), 0.0, 1.0))
+        v_forward *= heading_scale
+        if dist_to_current < RAG_SLOWDOWN_RADIUS and RAG_SLOWDOWN_RADIUS > 1e-6:
+            v_forward *= float(np.clip(dist_to_current / RAG_SLOWDOWN_RADIUS, 0.0, 1.0))
+
+    if abs(heading_error) < RAG_HEADING_DEADBAND:
+        v_turn = 0.0
+    else:
+        v_turn = float(np.clip(RAG_TURN_GAIN * heading_error, -RAG_MAX_TURN_SPEED, RAG_MAX_TURN_SPEED))
+
+    wheel_left = float(np.clip(v_forward - v_turn, -RAG_MAX_WHEEL_SPEED, RAG_MAX_WHEEL_SPEED))
+    wheel_right = float(np.clip(v_forward + v_turn, -RAG_MAX_WHEEL_SPEED, RAG_MAX_WHEEL_SPEED))
+    env.step(np.array([wheel_left, wheel_right], dtype=np.float32), mode='base')
+
+    env.render(teleop=False, idx=state.step)
+    state.step += 1
+
+    if state.step % 20 == 0:
+        print(
+            f"[RAG] Step {state.step} | idx={state.nav_waypoint_index}/{len(state.nav_waypoints)} "
+            f"| lookahead={lookahead_idx} | dist={dist_to_target:.3f} | err={heading_error:.3f}"
+        )

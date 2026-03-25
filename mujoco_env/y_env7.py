@@ -8,9 +8,11 @@ from mujoco_env.transforms import rpy2r, r2rpy
 import os
 import copy
 import glfw
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 from .env_constants import *
-from .xml_helpers import _build_offset_xml_bundle, _sample_tb3_x_uniform
+from .xml_helpers import _build_offset_xml_bundle
 from .base_auto_parking import BaseAutoParkingAgent
 from .expert_policy import ExpertPolicyAgent
 from .renderer_mixin import RendererMixin
@@ -20,7 +22,67 @@ from .instruction_mixin import InstructionMixin
 from .scene_init_mixin import SceneInitMixin
 
 
+@dataclass
+class ResetConfig:
+    seed: Optional[int]
+    mode: Optional[str]
+    force_fixed_arm_init: bool
+    preserve_instruction: bool
+    random_init_enabled: int
+    random_init_gripper_open: bool
+    select_smaller_angle_mug: bool
+    force_tray_init_enabled: bool
+    tb3_x_random_enabled: bool
+    tb3_x_min: float
+    tb3_x_max: float
+    tb3_x_gaussian_enabled: bool
+    tb3_x_center: float
+    tb3_x_offset_std: float
+    tb3_x_offset_min: float
+    tb3_x_offset_max: float
+    strict_options: bool = False
+
+
+@dataclass
+class ResetPlan:
+    effective_random_init_enabled: int = 0
+    random_target_pos: Optional[np.ndarray] = None
+    tb3_init_pose: Optional[np.ndarray] = None  # [x, y, z, yaw]
+    fallback_flags: Dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass
+class ResetReport:
+    config: Optional[ResetConfig] = None
+    sampled: Dict[str, Any] = field(default_factory=dict)
+    fallback_flags: Dict[str, bool] = field(default_factory=dict)
+    warnings: list = field(default_factory=list)
+    errors: list = field(default_factory=list)
+
+    def add_warning(self, message: str):
+        self.warnings.append(str(message))
+
+    def add_error(self, message: str):
+        self.errors.append(str(message))
+
+
 class SimpleEnv7(SceneInitMixin, InstructionMixin, MotionMixin, StateObserverMixin, RendererMixin):
+    RESET_OPTION_KEYS = {
+        'random_init_enabled',
+        'random_init_gripper_open',
+        'select_smaller_angle_mug',
+        'force_tray_init_enabled',
+        'tb3_x_random_enabled',
+        'tb3_x_min',
+        'tb3_x_max',
+        'tb3_x_gaussian_enabled',
+        'tb3_x_center',
+        'tb3_x_offset_std',
+        'tb3_x_offset_min',
+        'tb3_x_offset_max',
+        'strict_options',
+    }
+
     def __init__(self, xml_path, action_type='eef_pose', state_type='joint_angle', seed=None, 
                  random_init_enabled=False, random_init_gripper_open=True, select_smaller_angle_mug=False,
                  tb3_x_gaussian_enabled=True, tb3_x_center=TB3_X_CENTER,
@@ -46,6 +108,8 @@ class SimpleEnv7(SceneInitMixin, InstructionMixin, MotionMixin, StateObserverMix
         self.pending_tray_init_color = None
         self._active_tray_init_color = None
         self._suppress_pending_tray_init_update = False
+        self.strict_reset_options = False
+        self.debug_reset = False
 
         # 🔥 TB3 初始 X 轴随机化开关与参数（由外部传入）
         # 兼容旧参数：若未传入新开关，沿用旧开关语义；并从旧参数推导新区间。
@@ -184,86 +248,160 @@ class SimpleEnv7(SceneInitMixin, InstructionMixin, MotionMixin, StateObserverMix
     def base_auto_push_target_yaw(self, value):
         self.base_auto_parking.push_target_yaw = value
 
-    def reset(self, seed=None, mode=None, force_fixed_arm_init=False, preserve_instruction=False, options=None):
-        """Reset the environment.
+    def _call_with_seed(self, seed, fn):
+        if seed is None:
+            return fn()
+        state = np.random.get_state()
+        np.random.seed(seed)
+        try:
+            return fn()
+        finally:
+            np.random.set_state(state)
 
-        Parameters
-        ----------
-        options : dict or None
-            Key/value pairs that temporarily (and persistently) override
-            instance attributes for this reset.  Supported keys::
+    def _resolve_reset_config(self, seed=None, mode=None, force_fixed_arm_init=False, preserve_instruction=False, options=None):
+        cfg = ResetConfig(
+            seed=seed,
+            mode=mode,
+            force_fixed_arm_init=bool(force_fixed_arm_init),
+            preserve_instruction=bool(preserve_instruction),
+            random_init_enabled=int(self.random_init_enabled),
+            random_init_gripper_open=bool(self.random_init_gripper_open),
+            select_smaller_angle_mug=bool(self.select_smaller_angle_mug),
+            force_tray_init_enabled=bool(self.force_tray_init_enabled),
+            tb3_x_random_enabled=bool(self.tb3_x_random_enabled),
+            tb3_x_min=float(self.tb3_x_min),
+            tb3_x_max=float(self.tb3_x_max),
+            tb3_x_gaussian_enabled=bool(self.tb3_x_gaussian_enabled),
+            tb3_x_center=float(self.tb3_x_center),
+            tb3_x_offset_std=float(self.tb3_x_offset_std),
+            tb3_x_offset_min=float(self.tb3_x_offset_min),
+            tb3_x_offset_max=float(self.tb3_x_offset_max),
+            strict_options=bool(getattr(self, 'strict_reset_options', False)),
+        )
+        warnings = []
 
-                random_init_enabled, random_init_gripper_open,
-                select_smaller_angle_mug, force_tray_init_enabled,
-                tb3_x_random_enabled, tb3_x_min, tb3_x_max,
-                tb3_x_gaussian_enabled, tb3_x_center,
-                tb3_x_offset_std, tb3_x_offset_min, tb3_x_offset_max
-        """
         if options:
             for key, val in options.items():
-                if hasattr(self, key):
-                    setattr(self, key, val)
+                if key not in self.RESET_OPTION_KEYS:
+                    msg = f"Unknown reset option '{key}'"
+                    if cfg.strict_options:
+                        raise KeyError(msg)
+                    warnings.append(msg)
+                    continue
+                if key == 'strict_options':
+                    cfg.strict_options = bool(val)
+                    continue
+                setattr(cfg, key, val)
 
-        if seed is not None: np.random.seed(seed)
-        
-        if mode is not None:
-            self.control_mode = mode
+        if cfg.random_init_enabled not in (0, 1, 2):
+            msg = f"Invalid random_init_enabled={cfg.random_init_enabled}, fallback to 0"
+            if cfg.strict_options:
+                raise ValueError(msg)
+            warnings.append(msg)
+            cfg.random_init_enabled = 0
 
+        cfg.tb3_x_min = float(cfg.tb3_x_min)
+        cfg.tb3_x_max = float(cfg.tb3_x_max)
+        if cfg.tb3_x_min > cfg.tb3_x_max:
+            msg = f"tb3_x_min ({cfg.tb3_x_min}) > tb3_x_max ({cfg.tb3_x_max}), values swapped"
+            if cfg.strict_options:
+                raise ValueError(msg)
+            warnings.append(msg)
+            cfg.tb3_x_min, cfg.tb3_x_max = cfg.tb3_x_max, cfg.tb3_x_min
+
+        cfg.tb3_x_random_enabled = bool(cfg.tb3_x_random_enabled)
+        cfg.random_init_gripper_open = bool(cfg.random_init_gripper_open)
+        cfg.select_smaller_angle_mug = bool(cfg.select_smaller_angle_mug)
+        cfg.force_tray_init_enabled = bool(cfg.force_tray_init_enabled)
+        cfg.tb3_x_gaussian_enabled = bool(cfg.tb3_x_gaussian_enabled)
+
+        return cfg, warnings
+
+    def _apply_reset_config(self, cfg: ResetConfig):
+        self.random_init_enabled = int(cfg.random_init_enabled)
+        self.random_init_gripper_open = bool(cfg.random_init_gripper_open)
+        self.select_smaller_angle_mug = bool(cfg.select_smaller_angle_mug)
+        self.force_tray_init_enabled = bool(cfg.force_tray_init_enabled)
+        self.tb3_x_random_enabled = bool(cfg.tb3_x_random_enabled)
+        self.tb3_x_min = float(cfg.tb3_x_min)
+        self.tb3_x_max = float(cfg.tb3_x_max)
+        self.tb3_x_gaussian_enabled = bool(cfg.tb3_x_gaussian_enabled)
+        self.tb3_x_center = float(cfg.tb3_x_center)
+        self.tb3_x_offset_std = float(cfg.tb3_x_offset_std)
+        self.tb3_x_offset_min = float(cfg.tb3_x_offset_min)
+        self.tb3_x_offset_max = float(cfg.tb3_x_offset_max)
+        self.strict_reset_options = bool(cfg.strict_options)
+        if cfg.mode is not None:
+            self.control_mode = cfg.mode
+
+    def _plan_reset(self, cfg: ResetConfig, report: ResetReport):
+        plan = ResetPlan()
+        if cfg.seed is not None:
+            report.sampled['seed'] = int(cfg.seed)
+
+        plan.effective_random_init_enabled = 0 if cfg.force_fixed_arm_init else int(cfg.random_init_enabled)
+        report.sampled['effective_random_init_enabled'] = int(plan.effective_random_init_enabled)
+
+        if plan.effective_random_init_enabled == 1:
+            xyz = self._call_with_seed(cfg.seed, self._sample_random_init_v1)
+            plan.random_target_pos = np.array(xyz, dtype=np.float64)
+        elif plan.effective_random_init_enabled == 2:
+            result = self._call_with_seed(cfg.seed, self._sample_random_init_v2)
+            if result is None:
+                plan.fallback_flags['random_init_v2_to_v1'] = True
+                report.add_warning("V2 random init failed, falling back to V1.")
+                xyz = self._call_with_seed(cfg.seed, self._sample_random_init_v1)
+                plan.random_target_pos = np.array(xyz, dtype=np.float64)
+            else:
+                plan.random_target_pos = np.array(result, dtype=np.float64)
+
+        rng = np.random.default_rng(cfg.seed)
+        if cfg.tb3_x_random_enabled:
+            x_init = float(rng.uniform(cfg.tb3_x_min, cfg.tb3_x_max))
+        else:
+            x_init = float(0.5 * (cfg.tb3_x_min + cfg.tb3_x_max))
+        y_init = -0.25
+        z_init = 0.0
+        yaw_init = float(np.deg2rad(90))
+        plan.tb3_init_pose = np.array([x_init, y_init, z_init, yaw_init], dtype=np.float64)
+        report.sampled['tb3_init_pose'] = plan.tb3_init_pose.tolist()
+        if plan.random_target_pos is not None:
+            report.sampled['random_target_pos'] = plan.random_target_pos.tolist()
+        return plan
+
+    def _apply_reset_plan(self, cfg: ResetConfig, plan: ResetPlan, report: ResetReport):
         # 单次消费 pending 托盘初始化颜色，避免状态跨回合泄漏。
         self._active_tray_init_color = self.pending_tray_init_color
         self.pending_tray_init_color = None
-        
-        # 🔥 机械臂初始化：总是先初始化到标准位置（与V2一致）
-        q_init = np.deg2rad([0,0,0,0,0,0])
-        # 固定初始化：机械臂归位 (与V2一致，机械臂基座在原点 (0, 0))
-        # 目标: 基座前方 0.3m -> [0.3, 0.0, 1.0] (桌面0.83 + 安全高度0.17)
+
+        # 机械臂总是先初始化到标准位置
+        q_init = np.deg2rad([0, 0, 0, 0, 0, 0])
         q_zero, _, _ = solve_ik(
             self.env,
             self.joint_names,
             'tcp_link',
             q_init,
             np.array([0.3, 0.0, 0.48 + V6_Z_OFFSET]),
-            rpy2r(np.deg2rad([90, -0., 90]))
+            rpy2r(np.deg2rad([90, -0.0, 90])),
         )
         self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
-        
-        # 可选：强制机械臂固定初始化（忽略随机初始化开关）
-        effective_random_init_enabled = 0 if force_fixed_arm_init else self.random_init_enabled
 
-        # 🔥 如果启用了随机初始化，生成随机目标位置并准备平滑移动
-        if effective_random_init_enabled == 1:
-            # ====== 旧版随机初始化：扇形区域 ======
-            x_target, y_target, z_target = self._sample_random_init_v1()
-            
-        elif effective_random_init_enabled == 2:
-            # ====== 新版随机初始化：环形交集（仅简单模式）======
-            result = self._sample_random_init_v2()
-            if result is None:
-                # V2 失败，回退到 V1
-                print("   → Falling back to V1 random initialization.")
-                x_target, y_target, z_target = self._sample_random_init_v1()
-            else:
-                x_target, y_target, z_target = result
-        
-        # 如果启用了随机初始化，设置目标位置并准备平滑移动
-        if effective_random_init_enabled in [1, 2]:
-            # 使用IK求解目标位置的关节角度
-            target_pos = np.array([x_target, y_target, z_target])
+        if plan.random_target_pos is not None:
             self.random_target_q, _, _ = solve_ik(
-                self.env, self.joint_names, 'tcp_link', q_zero, 
-                target_pos, rpy2r(np.deg2rad([90, -0., 90]))
+                self.env,
+                self.joint_names,
+                'tcp_link',
+                q_zero,
+                plan.random_target_pos,
+                rpy2r(np.deg2rad([90, -0.0, 90])),
             )
-            self.random_target_pos = target_pos  # 保存用于打印
-            
-            # 准备平滑移动
+            self.random_target_pos = plan.random_target_pos
             self.moving_to_random = True
             self.random_start_q = q_zero.copy()
             self.random_interp_steps = 0
-            
-            print(f"   → Will smoothly move from standard position to random position")
-            print(f"   → After reaching: Press [Y] to start expert policy with recording")
+            print("   → Will smoothly move from standard position to random position")
+            print("   → After reaching: Press [Y] to start expert policy with recording")
         else:
-            # 未启用随机初始化，重置相关状态
             self.moving_to_random = False
             self.random_target_q = None
             self.random_start_q = None
@@ -271,79 +409,89 @@ class SimpleEnv7(SceneInitMixin, InstructionMixin, MotionMixin, StateObserverMix
             self.random_target_pos = None
 
         try:
-            # 🔥 小车初始位置：可配置模式
-            # - 开启时：区间均匀随机 x ~ U([tb3_x_min, tb3_x_max])
-            # - 关闭时：固定 x 为区间中点
-            if self.tb3_x_random_enabled:
-                x_init = _sample_tb3_x_uniform(self.tb3_x_min, self.tb3_x_max)
-            else:
-                x_init = 0.5 * (self.tb3_x_min + self.tb3_x_max)
-            y_init = -0.25
-            z_init = 0.0
-            yaw_init = np.deg2rad(90)  # +90度，朝向 y 轴正方向
-            
-            # 将 yaw 转换为旋转矩阵 (绕 z 轴旋转)
+            x_init, y_init, z_init, yaw_init = plan.tb3_init_pose
             R_init = rpy2r(np.array([0, 0, yaw_init]))
-            
             self.env.set_pR_base_body(
                 body_name='tb3_base',
                 p=np.array([x_init, y_init, z_init]),
-                R=R_init
+                R=R_init,
             )
         except Exception as e:
-            print(f"Warning: Could not reset TB3 base pose: {e}")
-        
-        # 状态重置
+            report.add_warning(f"Could not reset TB3 base pose: {e}")
+
         self.last_q = copy.deepcopy(q_zero)
         self.tray_initialized_color = None
         self.tray_initialized_body = None
         self.table_reference_positions = {}
-        # 🔥 根据开关设置初始夹爪状态
-        initial_gripper_state = 0.0 if self.random_init_gripper_open else 1.0
-        self.current_arm_q = np.concatenate([q_zero, np.array([initial_gripper_state]*4)]) 
+
+        initial_gripper_state = 0.0 if cfg.random_init_gripper_open else 1.0
+        self.current_arm_q = np.concatenate([q_zero, np.array([initial_gripper_state] * 4)])
         self.current_wheel_vel = np.zeros(2)
         self.p0, self.R0 = self.env.get_pR_body(body_name='tcp_link')
-        self.gripper_state = bool(initial_gripper_state)  # 🔥 同步更新 gripper_state
-        
-        # 保存初始关节角度（用于平滑归位）
+        self.gripper_state = bool(initial_gripper_state)
+
         self.arm_home_q = copy.deepcopy(q_zero)
         self.returning_home = False
         self.home_start_q = None
         self.home_interp_steps = 0
-        
-        # 🤖 重置专家策略状态
+
         self.expert_policy.reset()
-        # 外部脚本使用的录制标志（环境内部不依赖）
         self.is_recording = False
         self.base_auto_parking.reset()
         self.base_action_intent = np.zeros(2, dtype=np.float32)
-        
-        # 🔥 注意：moving_to_random 和 random_target_q 在 reset 中根据开关设置，这里不重置
 
-        # 物体初始化
         self._init_objects_demo()
-        
-        # 获取物体位置
         mug_red_init_pose, mug_blue_init_pose, plate_init_pose = self.get_obj_pose()
-        # 🔥 保存红色杯子、蓝色杯子和盘子的位置
-        self.obj_init_pose = np.concatenate([mug_red_init_pose, mug_blue_init_pose, plate_init_pose], dtype=np.float32)
+        self.obj_init_pose = np.concatenate(
+            [mug_red_init_pose, mug_blue_init_pose, plate_init_pose],
+            dtype=np.float32,
+        )
 
         for _ in range(100):
             self.step_env()
-            
+
+    def _finalize_reset(self, cfg: ResetConfig, report: ResetReport):
         self._suppress_pending_tray_init_update = True
         try:
-            if preserve_instruction and getattr(self, 'instruction', None):
+            if cfg.preserve_instruction and getattr(self, 'instruction', None):
                 current_task_type = getattr(self, 'task_type', 'arm' if self.control_mode == 'arm' else 'nav')
                 self.set_instruction(given=self.instruction, task_type=current_task_type)
             else:
-                self.set_instruction()  # 现在会根据 self.control_mode 自动设置正确的任务文本
+                self.set_instruction()
         finally:
             self._suppress_pending_tray_init_update = False
-        # 🔥 gripper_state 已在上面根据 random_init_gripper_open 设置，这里不再重置
-        
-        # 重置时刷新一次图像缓存
-        self.grab_image()
+
+        try:
+            self.grab_image()
+        except Exception as e:
+            report.add_warning(f"grab_image failed during reset: {e}")
+
+    def reset(self, seed=None, mode=None, force_fixed_arm_init=False, preserve_instruction=False, options=None):
+        """Reset the environment and return a structured reset report."""
+        report = ResetReport()
+        cfg, cfg_warnings = self._resolve_reset_config(
+            seed=seed,
+            mode=mode,
+            force_fixed_arm_init=force_fixed_arm_init,
+            preserve_instruction=preserve_instruction,
+            options=options,
+        )
+        report.config = cfg
+        for warning in cfg_warnings:
+            report.add_warning(warning)
+
+        self._apply_reset_config(cfg)
+        plan = self._plan_reset(cfg, report)
+        report.fallback_flags.update(plan.fallback_flags)
+        self._apply_reset_plan(cfg, plan, report)
+        self._finalize_reset(cfg, report)
+
+        if self.debug_reset and (report.warnings or report.errors):
+            print(
+                f"[RESET] warnings={len(report.warnings)} errors={len(report.errors)} "
+                f"fallbacks={report.fallback_flags}"
+            )
+        return report
 
     def step(self, action, mode='arm', action_type=None):
         """Execute one control step.

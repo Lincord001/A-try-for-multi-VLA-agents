@@ -10,14 +10,14 @@ from tqdm import tqdm
 datasets.disable_progress_bar()
 
 # ================= Config =================
-SOURCE_REPO = "omy_base_data_v7_4"
-SOURCE_ROOT = "./demo_data_base_v7_4"
+SOURCE_REPO = "omy_base_data_RAG"
+SOURCE_ROOT = "./demo_data_base_RAG"
 
-TARGET_REPO = "omy_base_data_v7_4_clean"
-TARGET_ROOT = "./demo_data_base_v7_4_clean"
+TARGET_REPO = "omy_base_data_RAG_clean"
+TARGET_ROOT = "./demo_data_base_RAG_clean"
 
 # Episodes to remove (0-based episode_index).
-BLACKLIST_EPISODES = [851]
+BLACKLIST_EPISODES = [0]
 # ==========================================
 
 TASK_FALLBACK = "Go to the target location."

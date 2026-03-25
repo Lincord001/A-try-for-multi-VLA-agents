@@ -76,7 +76,11 @@ def main():
         tb3_x_min=TB3_X_MIN,
         tb3_x_max=TB3_X_MAX,
     )
-    PnPEnv.reset(mode=INITIAL_MODE, options={'force_tray_init_enabled': False})
+    reset_report = PnPEnv.reset(mode=INITIAL_MODE, options={'force_tray_init_enabled': False})
+    if getattr(reset_report, 'warnings', None):
+        print(f"⚠️ Reset warnings ({len(reset_report.warnings)}):")
+        for msg in reset_report.warnings:
+            print(f"   - {msg}")
     teleop = TeleopAgent(PnPEnv)
 
     # ── 数据集加载 ──────────────────────────────────────────────────────────────

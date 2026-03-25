@@ -97,8 +97,8 @@ GRIPPER_CLOSE_THRESH = 0.25
 # ==========================================
 # 🔧 模型加载选择
 # ==========================================
-LOAD_ARM_MODEL = True
-LOAD_BASE_MODEL = True
+LOAD_ARM_MODEL = False
+LOAD_BASE_MODEL = False
 
 # ==========================================
 # 🔧 Arm 模式难度选择
@@ -119,3 +119,28 @@ TB3_X_CENTER = 0.20
 TB3_X_OFFSET_STD = 0.04
 TB3_X_OFFSET_MIN = -0.10
 TB3_X_OFFSET_MAX = 0.10
+
+# ==========================================
+# 🧭 RAG 导航（阶段五）配置
+# ==========================================
+RAG_TOPOLOGY_JSON = "./topology_output/topological_map.json"
+RAG_TARGET_NODE = "ep2_frame256"
+RAG_DENSE_OUTPUT_JSON = "./dense_waypoints_output.json"
+RAG_LOOKAHEAD_DIST = 0.40        # 前视距离放大，追点更平滑（原 0.25）
+RAG_LOOKAHEAD_MAX_OFFSET = 80    # lookahead 搜索窗口上限（索引偏移）
+RAG_ARRIVE_THRESHOLD = 0.35      # 到达判定放宽，差不多就算到了（原 0.20）
+RAG_IDX_SCAN_WINDOW = 200        # idx 到达判定前瞻扫描窗口（跳过轨迹折叠段）
+RAG_MAX_WHEEL_SPEED = 10.0
+RAG_MIN_FWD_SPEED = 1.5          # 兜底速度，防止减速到爬行（原 0.0）
+RAG_MAX_FWD_SPEED = 6.0
+RAG_TURN_GAIN = 2.5
+RAG_MAX_TURN_SPEED = 3.5
+RAG_SLOWDOWN_RADIUS = 0.25       # 减速区缩小，只在最后 25cm 才减速（原 0.60）
+RAG_HEADING_DEADBAND = np.deg2rad(3.0)
+
+# 第四阶段检索配置（运行时按 T 输入文本）
+RAG_FOREST_JSON = "./topology_output/forest_topological_map.json"
+RAG_MACRO_MODEL = "qwen-max"
+RAG_EMBEDDING_MODEL = "text-embedding-v4"
+RAG_RETRIEVE_MAX_RETRY = 3
+RAG_RETRIEVE_RETRY_WAIT = 1.5

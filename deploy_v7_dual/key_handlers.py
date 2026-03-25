@@ -7,6 +7,7 @@ key_handlers.py
 """
 
 import glfw
+import numpy as np
 
 from mujoco_env.instruction_utils import (
     INSTRUCTION_GROUPS,
@@ -37,6 +38,7 @@ def handle_key_c(state: DeployState, env, arm_policy, arm_runner, base_runner,
     # 重置 runner/policy 状态（清除旧数据）
     state.clear_runtime_state(arm_policy, arm_runner, base_runner,
                               arm_smoother, base_postproc)
+    state.stop_navigation()
 
     # 切换模式
     if state.control_mode == 'arm':
@@ -113,6 +115,7 @@ def handle_key_n(state: DeployState, env, arm_policy, arm_runner,
             print("\n⚠️ ARM policy not loaded!")
     else:  # base mode
         if base_runner is not None and not state.auto_mode_base:
+            state.stop_navigation()
             state.auto_mode_base = True
             base_postproc.reset()
             base_runner.start()
@@ -137,6 +140,9 @@ def handle_key_m(state: DeployState, env, arm_runner, arm_smoother,
     elif state.control_mode == 'base' and state.auto_mode_base:
         state.deactivate_base_auto(base_runner, base_postproc, reset_runner_state=True)
         print("\n👤 [BASE] Switched to Manual Control")
+    elif state.control_mode == 'base' and state.nav_mode_active:
+        state.stop_navigation()
+        print("\n👤 [BASE] Stopped RAG navigation, switched to Manual Control")
 
 
 # =============================================================================
@@ -152,6 +158,7 @@ def handle_key_z(state: DeployState, env, arm_policy, arm_runner,
     state.deactivate_arm_auto(arm_runner, arm_smoother,
                               disable_auto_check=False, reset_runner_state=False)
     state.deactivate_base_auto(base_runner, base_postproc, reset_runner_state=False)
+    state.stop_navigation()
 
     # 关闭自动检测（手动重置时）
     state.auto_check_enabled = False
@@ -236,3 +243,94 @@ def handle_key_g(state: DeployState, env):
 
     print("\n🚀 [G] Teleporting base and cup to (4.25, 3.5, 0) yaw=57.1")
     env.teleport_base_and_cups(4.25, 3.5, 0.0, -57.1)
+
+
+# =============================================================================
+# T 键：输入自然语言并执行第四阶段检索（仅更新目标，不自动导航）
+# =============================================================================
+
+def handle_key_t(state: DeployState, env, rag_navigator):
+    if not env.env.is_key_pressed_once(key=glfw.KEY_T):
+        return
+
+    if state.control_mode != 'base':
+        print("\n⚠️ [T] Retrieval only available in BASE mode. Press [C] to switch.")
+        return
+
+    if rag_navigator is None:
+        print("\n⚠️ [T] RAG navigator unavailable. Check DASHSCOPE_API_KEY / forest graph config.")
+        return
+
+    print("\n📝 [T] Enter your natural-language navigation query:")
+    query_text = input("   > ").strip()
+    if not query_text:
+        print("⚠️ [T] Empty query ignored.")
+        return
+
+    try:
+        result = rag_navigator.retrieve_top_leaf(query_text)
+        state.update_retrieval_result(query_text, result)
+        query = str(result.get("query", query_text))
+        cluster_id = str(result.get("cluster_id", "N/A"))
+        cluster_caption = str(result.get("cluster_caption", ""))
+        target_node = str(result.get("target_node", "N/A"))
+        target_caption = str(result.get("target_caption", ""))
+        score = float(result.get("score", 0.0))
+        target_xy = result.get("target_xy")
+
+        print("\n================ Embodied-RAG 检索报告 ================")
+        print(f"【用户指令】{query}")
+        print(f"【宏观决策】{cluster_id} | 区域摘要: {cluster_caption}")
+        print(f"【微观匹配】{target_node} | 描述: {target_caption} | 余弦相似度: {score:.6f}")
+        if isinstance(target_xy, (list, tuple)) and len(target_xy) >= 2:
+            print(
+                f"【最终导航系坐标】(x, y) = "
+                f"({float(target_xy[0]):.6f}, {float(target_xy[1]):.6f})"
+            )
+        print("======================================================")
+        print("   → Press [R] to start navigation to this retrieved target.")
+    except Exception as e:
+        print(f"❌ [T] Retrieval failed: {e}")
+
+
+# =============================================================================
+# R 键：触发/停止 RAG 导航执行
+# =============================================================================
+
+def handle_key_r(state: DeployState, env, base_runner, base_postproc, rag_executor, rag_target_node, rag_output_json):
+    if not env.env.is_key_pressed_once(key=glfw.KEY_R):
+        return
+
+    if state.control_mode != 'base':
+        print("\n⚠️ [R] RAG navigation only available in BASE mode. Press [C] to switch.")
+        return
+
+    if state.nav_mode_active:
+        state.stop_navigation()
+        env.step(np.array([0.0, 0.0]), mode='base')
+        print("\n⏸️ [R] RAG navigation stopped.")
+        return
+
+    if state.auto_mode_base:
+        state.deactivate_base_auto(base_runner, base_postproc, reset_runner_state=False)
+        print("\n🔁 [R] BASE PI0 auto control stopped before RAG navigation.")
+
+    try:
+        target_node = state.rag_retrieved_target_node or rag_target_node
+        target_source = "retrieved" if state.rag_retrieved_target_node else "default"
+        p_tb3, R_tb3 = env.env.get_pR_body('tb3_base')
+        yaw = float(np.arctan2(float(R_tb3[1, 0]), float(R_tb3[0, 0])))
+        start_pose = np.array([float(p_tb3[0]), float(p_tb3[1]), yaw], dtype=np.float64)
+
+        result = rag_executor.plan_dense_waypoints(start_pose=start_pose, target_node=target_node)
+        rag_executor.save_result(result, rag_output_json)
+        state.start_navigation(result["dense_waypoints"], target_node)
+        base_postproc.reset()
+        print(
+            f"\n🧭 [R] RAG navigation started: target={target_node} ({target_source}) "
+            f"| path_nodes={len(result['path_nodes'])} "
+            f"| dense_waypoints={result['dense_waypoints_count']}"
+        )
+    except Exception as e:
+        state.stop_navigation()
+        print(f"\n❌ [R] Failed to start RAG navigation: {e}")

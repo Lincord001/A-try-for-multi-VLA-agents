@@ -112,6 +112,8 @@ def print_controls_guide(control_mode):
     print("      → Press once to ENABLE: model auto-execute + auto-check success/fail + auto-reset")
     print("      → Press again to DISABLE")
     print("  [G] Teleport Base (and cup if locked) to (4.25, 3.5, 0) yaw=-s57.1")
+    print("  [T] Retrieve target node from natural-language query (BASE mode only)")
+    print("  [R] Toggle RAG Navigation (BASE mode only, uses retrieved target if available)")
     print("  [Q] Quit")
     print("=" * 70 + "\n")
     print(f"🎯 Current Mode: {control_mode.upper()}")

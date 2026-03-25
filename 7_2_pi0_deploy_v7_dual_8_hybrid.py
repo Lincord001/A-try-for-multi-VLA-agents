@@ -20,6 +20,15 @@ Base 模式：
 - 权重: ckpt/pi0_base/pretrained_model_ver_3/pretrained_model
 - 输入: 3个相机(front/left/right, 256x256) + 2维轮速度
 - 输出: 2维轮速度指令 - 绝对量
+
+模块职责（deploy_v7_dual）：
+  - deploy_v7_dual/config.py              (部署参数与开关配置)
+  - deploy_v7_dual/policy_loader.py       (策略模型加载与初始化)
+  - deploy_v7_dual/runtime_components.py  (异步推理器/动作平滑器/图像预处理)
+  - deploy_v7_dual/deploy_state.py        (部署共享状态与任务计时统计)
+  - deploy_v7_dual/key_handlers.py        (按键事件处理：模式切换/启停/重置等)
+  - deploy_v7_dual/control_loop.py        (arm/base 自动与手动控制主逻辑)
+  - deploy_v7_dual/ui_prints.py           (启动信息与控制说明输出)
 """
 
 import os
@@ -71,6 +80,14 @@ from deploy_v7_dual.config import (
     TB3_X_OFFSET_STD,
     TB3_X_OFFSET_MIN,
     TB3_X_OFFSET_MAX,
+    RAG_TOPOLOGY_JSON,
+    RAG_TARGET_NODE,
+    RAG_DENSE_OUTPUT_JSON,
+    RAG_FOREST_JSON,
+    RAG_MACRO_MODEL,
+    RAG_EMBEDDING_MODEL,
+    RAG_RETRIEVE_MAX_RETRY,
+    RAG_RETRIEVE_RETRY_WAIT,
 )
 from deploy_v7_dual.runtime_components import (
     ActionSmoother,
@@ -87,6 +104,8 @@ from deploy_v7_dual.key_handlers import (
     handle_key_k,
     handle_key_l,
     handle_key_g,
+    handle_key_r,
+    handle_key_t,
 )
 from deploy_v7_dual.control_loop import (
     check_auto_result,
@@ -94,6 +113,7 @@ from deploy_v7_dual.control_loop import (
     step_arm_manual,
     step_base_auto,
     step_base_manual,
+    step_base_nav,
 )
 from deploy_v7_dual.ui_prints import (
     print_startup_banner,
@@ -117,6 +137,8 @@ except ImportError as e:
     sys.exit(1)
 
 from mujoco_env.action_utils import BaseActionPostProcessor
+from rag_pipeline.rag_executor import TrajectoryExecutor
+from rag_pipeline.rag_navigator import RAGNavigator, NavigatorArgs
 from mujoco_env.visualization import (
     extract_model_version,
     plot_task_stats,
@@ -179,8 +201,8 @@ def main():
         print("\n⏭️  Skipping BASE model loading (LOAD_BASE_MODEL=False)")
 
     if arm_policy is None and base_policy is None:
-        print("❌ Both policies failed to load or were disabled. Exiting.")
-        return
+        print("\n⚠️ Both policies are not loaded (or disabled).")
+        print("   Running in MANUAL-ONLY mode: environment will still open.")
 
     # 2. 初始化环境 (使用 y7 场景)
     print("\n" + "="*60)
@@ -202,7 +224,11 @@ def main():
     )
 
     control_mode = 'arm'
-    PnPEnv.reset(mode=control_mode)
+    reset_report = PnPEnv.reset(mode=control_mode)
+    if getattr(reset_report, 'warnings', None):
+        print(f"⚠️ Reset warnings ({len(reset_report.warnings)}):")
+        for msg in reset_report.warnings:
+            print(f"   - {msg}")
     teleop = TeleopAgent(PnPEnv)
 
     # 3. 初始化共享状态
@@ -299,6 +325,23 @@ def main():
     )
 
     print_controls_guide(state.control_mode)
+    rag_executor = TrajectoryExecutor(RAG_TOPOLOGY_JSON)
+    rag_navigator = None
+    try:
+        rag_navigator = RAGNavigator(
+            NavigatorArgs(
+                query="runtime_query",
+                input_json=RAG_FOREST_JSON,
+                macro_model=RAG_MACRO_MODEL,
+                embedding_model=RAG_EMBEDDING_MODEL,
+                max_retry=RAG_RETRIEVE_MAX_RETRY,
+                retry_wait=RAG_RETRIEVE_RETRY_WAIT,
+                log_level="INFO",
+            )
+        )
+        print(f"🧠 [RAG] Navigator loaded: {RAG_FOREST_JSON}")
+    except Exception as e:
+        print(f"⚠️ [RAG] Navigator init failed, T-key retrieval disabled: {e}")
 
     try:
         while PnPEnv.env.is_viewer_alive():
@@ -321,6 +364,16 @@ def main():
                 handle_key_k(state, PnPEnv, base_postproc)
                 handle_key_l(state, PnPEnv, arm_policy, arm_runner, arm_smoother)
                 handle_key_g(state, PnPEnv)
+                handle_key_t(state, PnPEnv, rag_navigator)
+                handle_key_r(
+                    state,
+                    PnPEnv,
+                    base_runner,
+                    base_postproc,
+                    rag_executor,
+                    RAG_TARGET_NODE,
+                    RAG_DENSE_OUTPUT_JSON,
+                )
 
                 # --- 控制逻辑 ---
                 if state.control_mode == 'arm':
@@ -336,7 +389,9 @@ def main():
                         step_arm_manual(state, PnPEnv, teleop)
 
                 else:  # base mode
-                    if state.auto_mode_base and base_runner:
+                    if state.nav_mode_active:
+                        step_base_nav(state, PnPEnv)
+                    elif state.auto_mode_base and base_runner:
                         step_base_auto(state, PnPEnv, base_runner, base_postproc)
                     else:
                         step_base_manual(state, PnPEnv, teleop,

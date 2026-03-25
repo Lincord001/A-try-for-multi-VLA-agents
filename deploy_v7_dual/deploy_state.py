@@ -75,6 +75,15 @@ class DeployState:
         'x': [], 'y': [], 'z': []
     })
 
+    # ---------- RAG 导航执行状态 ----------
+    nav_mode_active: bool = False
+    nav_target_node: Optional[str] = None
+    nav_waypoints: list = dataclasses.field(default_factory=list)
+    nav_waypoint_index: int = 0
+    rag_query_text: Optional[str] = None
+    rag_retrieved_target_node: Optional[str] = None
+    rag_retrieval_meta: dict = dataclasses.field(default_factory=dict)
+
     # ---------- 自动重置选项（从 config 读取，主程序初始化后传入） ----------
     auto_reset_options: dict = dataclasses.field(default_factory=lambda: {
         "random_init_enabled": RANDOM_INIT_ENABLED,
@@ -149,3 +158,29 @@ class DeployState:
         )
         if reset_timer:
             self.reset_task_timer(env)
+
+    def start_navigation(self, waypoints, target_node):
+        """开启 RAG 导航执行。"""
+        self.nav_waypoints = [list(p) for p in waypoints]
+        self.nav_waypoint_index = 0
+        self.nav_target_node = str(target_node)
+        self.nav_mode_active = len(self.nav_waypoints) > 0
+
+    def stop_navigation(self):
+        """停止 RAG 导航执行并清空状态。"""
+        self.nav_mode_active = False
+        self.nav_waypoints = []
+        self.nav_waypoint_index = 0
+
+    def update_retrieval_result(self, query_text, retrieval_result):
+        """更新第四阶段检索结果缓存。"""
+        self.rag_query_text = str(query_text)
+        self.rag_retrieval_meta = dict(retrieval_result)
+        target_node = retrieval_result.get("target_node")
+        self.rag_retrieved_target_node = str(target_node) if target_node is not None else None
+
+    def clear_retrieval_result(self):
+        """清空第四阶段检索结果缓存。"""
+        self.rag_query_text = None
+        self.rag_retrieved_target_node = None
+        self.rag_retrieval_meta = {}
