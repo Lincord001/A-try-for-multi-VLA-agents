@@ -9,8 +9,7 @@
 !.gitignore
 
 # 第三步：保留根目录下的指定文件
-!7_2_pi0_deploy_v7_dual_8_hybrid.py
-!collect_data_v7.py
+!*.py
 !README.md
 !requirements.txt
 
