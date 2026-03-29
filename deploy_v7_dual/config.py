@@ -11,6 +11,15 @@ TASK_LOOP_COUNT = 100  # 0 = 无限循环，>0 = 执行指定次数后退出
 STEP_LOG_PATH = "./task_steps_log.csv"
 # 成功统计输出目录（与 cup_position 文件夹一致）
 TASK_STATS_OUTPUT_DIR = "./cup_position"
+EXECUTION_TRACE_ENABLED = True
+EXECUTION_TRACE_OUTPUT_DIR = "./execution_tracker_traces"
+EXECUTION_TRACE_FLUSH_EVERY = 1
+EXECUTION_TRACE_EVALUATE_TRACKER = False
+ARM_VLM_ORCHESTRATION_ENABLED = True
+ARM_VLM_CHECK_OUTPUT_DIR = "./vlm_verifier_checks"
+ARM_VLM_MODEL = "qwen3.5-plus-2026-02-15"
+ARM_VLM_HANDOFF_WARMUP_STEPS = 10
+ARM_VLM_HANDOFF_MAX_JOINT_DELTA = 0.03
 
 # ==========================================
 # 🔧 模型配置

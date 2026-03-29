@@ -58,6 +58,8 @@ def check_auto_result(
     arm_policy,
     arm_runner,
     arm_smoother,
+    trace_manager=None,
+    arm_orchestrator=None,
 ) -> bool:
     """
     检测当前任务是否成功或超时，处理重置并更新统计数据。
@@ -74,6 +76,14 @@ def check_auto_result(
 
     # ---- 自动检测成功 ----
     if env.check_success():
+        if trace_manager is not None:
+            trace_manager.stop_arm_episode(
+                reason='task_success',
+                extra={
+                    'step': state.step,
+                    'task_steps': state.step - state.task_start_step,
+                },
+            )
         target_color, cup_init = get_target_cup_init(env)
         append_step_log(
             STEP_LOG_PATH, state.control_mode, 'success',
@@ -120,6 +130,14 @@ def check_auto_result(
         state.arm_chunk_step_index = 0
         state.step = 0
         state.reset_task_timer(env)
+        if trace_manager is not None and state.auto_mode_arm:
+            trace_manager.start_arm_episode(
+                env,
+                step=state.step,
+                reason='auto_reset_after_success',
+            )
+        if arm_orchestrator is not None and state.auto_mode_arm:
+            arm_orchestrator.on_auto_start(env)
 
         if TASK_LOOP_COUNT > 0 and state.task_completed_count >= TASK_LOOP_COUNT:
             print(f"\n🎯 Reached target task count ({TASK_LOOP_COUNT}). Exiting...")
@@ -127,6 +145,15 @@ def check_auto_result(
 
     # ---- 超时判定 ----
     elif elapsed >= TASK_TIMEOUT_SEC:
+        if trace_manager is not None:
+            trace_manager.stop_arm_episode(
+                reason='task_timeout',
+                extra={
+                    'step': state.step,
+                    'task_steps': state.step - state.task_start_step,
+                    'timeout_sec': TASK_TIMEOUT_SEC,
+                },
+            )
         ensure_step_log_header(STEP_LOG_PATH)
         with open(STEP_LOG_PATH, 'a', newline='') as f:
             writer = csv.writer(f)
@@ -167,6 +194,14 @@ def check_auto_result(
         state.arm_chunk_step_index = 0
         state.step = 0
         state.reset_task_timer(env)
+        if trace_manager is not None and state.auto_mode_arm:
+            trace_manager.start_arm_episode(
+                env,
+                step=state.step,
+                reason='auto_reset_after_timeout',
+            )
+        if arm_orchestrator is not None and state.auto_mode_arm:
+            arm_orchestrator.on_auto_start(env)
 
         if TASK_LOOP_COUNT > 0 and state.task_completed_count >= TASK_LOOP_COUNT:
             print(f"\n🎯 Reached target task count ({TASK_LOOP_COUNT}). Exiting...")
@@ -187,6 +222,8 @@ def step_arm_auto(
     arm_smoother,
     img_transform,
     device,
+    trace_manager=None,
+    arm_orchestrator=None,
 ):
     """ARM 自动控制模式：推理一步并执行动作。"""
     # 1. 收集观测数据
@@ -277,22 +314,168 @@ def step_arm_auto(
             # 没有新动作时保持当前位置，避免突然跳变
             action_step = robot_state.copy()
 
+    if arm_orchestrator is not None:
+        action_step = arm_orchestrator.limit_resume_action(action_step, robot_state)
+
     # 2. 执行动作（使用平滑器）
+    applied_action = None
     if action_step is not None:
         smoothed_action, gripper_state = arm_smoother.smooth_action(action_step)
         env.step(smoothed_action, mode='arm')
         env.gripper_state = gripper_state
+        applied_action = smoothed_action
 
     # 3. 更新 p0 和 R0（用于保持 eef_pose 状态同步）
     env.p0, env.R0 = env.env.get_pR_body(body_name='tcp_link')
+
+    if trace_manager is not None:
+        trace_manager.record_arm_step(
+            env,
+            applied_action,
+            step=state.step,
+            tag='arm_auto_step',
+        )
 
     # 4. 渲染 & 步数
     env.render(teleop=False, idx=state.step)
     state.step += 1
 
+    orchestrator_event = None
+    if arm_orchestrator is not None:
+        orchestrator_event = arm_orchestrator.after_arm_step(
+            env,
+            applied_action,
+            step=state.step,
+        )
+
     if state.step % 50 == 0:
         mode_str = "SYNC" if ARM_SYNC_INFERENCE else "ASYNC"
         print(f"[ARM-{mode_str}] Step {state.step} | Task: {env.instruction}")
+    return orchestrator_event
+
+
+def step_arm_recovery(state: DeployState, env, arm_orchestrator):
+    """ARM recoverable-failure handling via smooth return-home."""
+    done = arm_orchestrator.step_recovery(env)
+    env.render(teleop=False, idx=state.step)
+    state.step += 1
+    return done
+
+
+def handle_arm_orchestrator_event(
+    state: DeployState,
+    env,
+    arm_policy,
+    arm_runner,
+    arm_smoother,
+    event,
+    trace_manager=None,
+    arm_orchestrator=None,
+) -> bool:
+    """Handle success/fail verdicts returned by the arm VLM orchestrator."""
+    if not event:
+        return False
+
+    status = str(event.get('status'))
+    reason = str(event.get('reason', status))
+    vlm_result = event.get('vlm')
+    rationale = getattr(vlm_result, 'rationale', '') if vlm_result is not None else ''
+
+    if status == 'pause_for_vlm_check':
+        state.arm_vlm_pause_active = True
+        print(f"\n⏸️ [ARM-VLM] VLA paused for visual verification: {reason}")
+        return False
+
+    if status == 'verification_unavailable':
+        state.arm_vlm_pause_active = False
+        print(f"\n⚠️ [ARM-VLM] Verification unavailable after pause: {reason}")
+        if trace_manager is not None:
+            trace_manager.stop_arm_episode(reason='vlm_verification_unavailable')
+        if arm_orchestrator is not None:
+            arm_orchestrator.on_auto_stop('vlm_verification_unavailable')
+        state.deactivate_arm_auto(arm_runner, arm_smoother, disable_auto_check=False, reset_runner_state=True)
+        return False
+
+    if status == 'recoverable':
+        state.arm_vlm_pause_active = False
+        print(f"\n🛠️ [ARM-VLM] Recoverable failure: {reason}")
+        if rationale:
+            print(f"   VLM: {rationale}")
+        print("   → Starting smooth return-home recovery.")
+        return False
+
+    if status == 'success':
+        state.arm_vlm_pause_active = False
+        print(f"\n✅ [ARM-VLM] Success verified: {reason}")
+        if rationale:
+            print(f"   VLM: {rationale}")
+        if not state.auto_check_enabled:
+            if trace_manager is not None:
+                trace_manager.stop_arm_episode(reason='vlm_verified_success')
+            if arm_orchestrator is not None:
+                arm_orchestrator.on_auto_stop('vlm_verified_success')
+            state.deactivate_arm_auto(arm_runner, arm_smoother, disable_auto_check=False, reset_runner_state=True)
+            return False
+
+        if trace_manager is not None:
+            trace_manager.stop_arm_episode(reason='vlm_verified_success')
+        target_color, cup_init = get_target_cup_init(env)
+        append_step_log(
+            STEP_LOG_PATH, state.control_mode, 'success',
+            state.step - state.task_start_step, target_color, cup_init,
+        )
+        state.task_completed_count += 1
+        state.task_success_count += 1
+    else:
+        state.arm_vlm_pause_active = False
+        print(f"\n❌ [ARM-VLM] Irrecoverable failure: {reason}")
+        if rationale:
+            print(f"   VLM: {rationale}")
+        if not state.auto_check_enabled:
+            if trace_manager is not None:
+                trace_manager.stop_arm_episode(reason='vlm_verified_failure')
+            if arm_orchestrator is not None:
+                arm_orchestrator.on_auto_stop('vlm_verified_failure')
+            state.deactivate_arm_auto(arm_runner, arm_smoother, disable_auto_check=False, reset_runner_state=True)
+            return False
+
+        if trace_manager is not None:
+            trace_manager.stop_arm_episode(reason='vlm_verified_failure')
+        ensure_step_log_header(STEP_LOG_PATH)
+        with open(STEP_LOG_PATH, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                time.strftime('%Y-%m-%d %H:%M:%S'),
+                state.control_mode, 'fail',
+                state.step - state.task_start_step,
+                'unknown', 'nan', 'nan', 'nan',
+            ])
+        state.task_completed_count += 1
+        state.task_fail_count += 1
+
+    perform_auto_reset(
+        env=env,
+        control_mode=state.control_mode,
+        instruction_group_indices=state.instruction_group_indices,
+        last_instruction_by_mode=state.last_instruction_by_mode,
+        arm_runner=arm_runner,
+        arm_policy=arm_policy,
+        arm_smoother=arm_smoother,
+        auto_mode_arm=state.auto_mode_arm,
+        arm_sync_inference=ARM_SYNC_INFERENCE,
+        apply_instruction_from_group=_apply_instruction_from_group,
+        reset_options=state.auto_reset_options,
+    )
+    state.arm_action_chunk = None
+    state.arm_chunk_step_index = 0
+    state.arm_vlm_pause_active = False
+    state.step = 0
+    state.reset_task_timer(env)
+    if trace_manager is not None and state.auto_mode_arm:
+        trace_manager.start_arm_episode(env, step=state.step, reason='auto_reset_after_vlm_verdict')
+    if arm_orchestrator is not None and state.auto_mode_arm:
+        arm_orchestrator.on_auto_start(env)
+    return False
 
 
 # =============================================================================
@@ -324,7 +507,7 @@ def step_arm_manual(state: DeployState, env, teleop):
 # BASE 自动控制步进
 # =============================================================================
 
-def step_base_auto(state: DeployState, env, base_runner, base_postproc):
+def step_base_auto(state: DeployState, env, base_runner, base_postproc, trace_manager=None):
     """BASE 自动控制模式：异步推理一步并执行动作。"""
     # 1. 收集观测数据
     robot_state = env.get_base_state()   # (4,) [轮速 + 朝向sin/cos]
@@ -341,13 +524,24 @@ def step_base_auto(state: DeployState, env, base_runner, base_postproc):
     action_step, _status_msg = base_runner.get_action_at_time(time.time())
 
     # 4. 执行动作
+    applied_action = None
     if action_step is not None:
         yaw = float(np.arctan2(float(robot_state[2]), float(robot_state[3])))
         action_step = base_postproc.process(action_step, yaw)
         env.step(action_step, mode='base')
+        applied_action = action_step
     else:
         base_postproc.reset()
-        env.step(np.array([0.0, 0.0]), mode='base')
+        applied_action = np.array([0.0, 0.0], dtype=np.float32)
+        env.step(applied_action, mode='base')
+
+    if trace_manager is not None:
+        trace_manager.record_base_step(
+            env,
+            applied_action,
+            step=state.step,
+            tag='base_auto_step',
+        )
 
     # 5. 渲染 & 步数
     env.render(teleop=False, idx=state.step)

@@ -24,15 +24,21 @@ from .config import ARM_SYNC_INFERENCE
 # =============================================================================
 
 def handle_key_c(state: DeployState, env, arm_policy, arm_runner, base_runner,
-                 arm_smoother, base_postproc):
+                 arm_smoother, base_postproc, trace_manager=None, arm_orchestrator=None):
     if not env.env.is_key_pressed_once(key=glfw.KEY_C):
         return
 
     # 停止当前运行的推理
     if state.control_mode == 'arm':
+        if trace_manager is not None:
+            trace_manager.stop_arm_episode(reason='mode_switch')
+        if arm_orchestrator is not None:
+            arm_orchestrator.on_auto_stop('mode_switch')
         state.deactivate_arm_auto(arm_runner, arm_smoother,
                                   disable_auto_check=True, reset_runner_state=False)
     else:
+        if trace_manager is not None:
+            trace_manager.stop_base_episode(reason='mode_switch')
         state.deactivate_base_auto(base_runner, base_postproc, reset_runner_state=False)
 
     # 重置 runner/policy 状态（清除旧数据）
@@ -101,7 +107,7 @@ def handle_arrow_keys(state: DeployState, env):
 # =============================================================================
 
 def handle_key_n(state: DeployState, env, arm_policy, arm_runner,
-                 arm_smoother, base_runner, base_postproc):
+                 arm_smoother, base_runner, base_postproc, trace_manager=None, arm_orchestrator=None):
     if not env.env.is_key_pressed_once(key=glfw.KEY_N):
         return
 
@@ -109,6 +115,10 @@ def handle_key_n(state: DeployState, env, arm_policy, arm_runner,
         if arm_policy is not None and not state.auto_mode_arm:
             state.activate_arm_auto(arm_policy, arm_runner, arm_smoother,
                                     enable_auto_check=False, reset_timer=False)
+            if trace_manager is not None:
+                trace_manager.start_arm_episode(env, step=state.step, reason='manual_key_n_start')
+            if arm_orchestrator is not None:
+                arm_orchestrator.on_auto_start(env)
             mode_str = "SYNC" if ARM_SYNC_INFERENCE else "ASYNC"
             print(f"\n🤖 [ARM] PI0 Auto Control Started! (Mode: {mode_str})")
         elif arm_policy is None:
@@ -119,6 +129,8 @@ def handle_key_n(state: DeployState, env, arm_policy, arm_runner,
             state.auto_mode_base = True
             base_postproc.reset()
             base_runner.start()
+            if trace_manager is not None:
+                trace_manager.start_base_episode(env, step=state.step, reason='manual_key_n_start')
             print("\n🚗 [BASE] PI0 Auto Control Started!")
         elif base_runner is None:
             print("\n⚠️ BASE policy not loaded!")
@@ -129,15 +141,21 @@ def handle_key_n(state: DeployState, env, arm_policy, arm_runner,
 # =============================================================================
 
 def handle_key_m(state: DeployState, env, arm_runner, arm_smoother,
-                 base_runner, base_postproc):
+                 base_runner, base_postproc, trace_manager=None, arm_orchestrator=None):
     if not env.env.is_key_pressed_once(key=glfw.KEY_M):
         return
 
     if state.control_mode == 'arm' and state.auto_mode_arm:
+        if trace_manager is not None:
+            trace_manager.stop_arm_episode(reason='manual_key_m_stop')
+        if arm_orchestrator is not None:
+            arm_orchestrator.on_auto_stop('manual_key_m_stop')
         state.deactivate_arm_auto(arm_runner, arm_smoother,
                                   disable_auto_check=True, reset_runner_state=True)
         print("\n👤 [ARM] Switched to Manual Control")
     elif state.control_mode == 'base' and state.auto_mode_base:
+        if trace_manager is not None:
+            trace_manager.stop_base_episode(reason='manual_key_m_stop')
         state.deactivate_base_auto(base_runner, base_postproc, reset_runner_state=True)
         print("\n👤 [BASE] Switched to Manual Control")
     elif state.control_mode == 'base' and state.nav_mode_active:
@@ -150,11 +168,16 @@ def handle_key_m(state: DeployState, env, arm_runner, arm_smoother,
 # =============================================================================
 
 def handle_key_z(state: DeployState, env, arm_policy, arm_runner,
-                 base_runner, arm_smoother, base_postproc):
+                 base_runner, arm_smoother, base_postproc, trace_manager=None, arm_orchestrator=None):
     if not env.env.is_key_pressed_once(key=glfw.KEY_Z):
         return
 
     # 停止自动控制
+    if trace_manager is not None:
+        trace_manager.stop_arm_episode(reason='manual_key_z_reset')
+        trace_manager.stop_base_episode(reason='manual_key_z_reset')
+    if arm_orchestrator is not None:
+        arm_orchestrator.on_auto_stop('manual_key_z_reset')
     state.deactivate_arm_auto(arm_runner, arm_smoother,
                               disable_auto_check=False, reset_runner_state=False)
     state.deactivate_base_auto(base_runner, base_postproc, reset_runner_state=False)
@@ -210,7 +233,7 @@ def handle_key_k(state: DeployState, env, base_postproc):
 # L 键：开启/关闭自动检测+自动控制功能（开关）
 # =============================================================================
 
-def handle_key_l(state: DeployState, env, arm_policy, arm_runner, arm_smoother):
+def handle_key_l(state: DeployState, env, arm_policy, arm_runner, arm_smoother, trace_manager=None, arm_orchestrator=None):
     if not env.env.is_key_pressed_once(key=glfw.KEY_L):
         return
 
@@ -222,10 +245,18 @@ def handle_key_l(state: DeployState, env, arm_policy, arm_runner, arm_smoother):
             else:
                 state.activate_arm_auto(arm_policy, arm_runner, arm_smoother,
                                         enable_auto_check=True, reset_timer=True, env=env)
+                if trace_manager is not None:
+                    trace_manager.start_arm_episode(env, step=state.step, reason='auto_check_enabled')
+                if arm_orchestrator is not None:
+                    arm_orchestrator.on_auto_start(env)
                 print("\n✅ [L] Auto-control + Auto-detection ENABLED!")
                 print("   → Model will auto-execute tasks, check success/fail, and auto-reset.")
         else:
             # 关闭自动检测 + 自动控制
+            if trace_manager is not None:
+                trace_manager.stop_arm_episode(reason='auto_check_disabled')
+            if arm_orchestrator is not None:
+                arm_orchestrator.on_auto_stop('auto_check_disabled')
             state.deactivate_arm_auto(arm_runner, arm_smoother,
                                       disable_auto_check=True, reset_runner_state=True)
             print("\n⏸️ [L] Auto-control + Auto-detection DISABLED.")
@@ -297,7 +328,7 @@ def handle_key_t(state: DeployState, env, rag_navigator):
 # R 键：触发/停止 RAG 导航执行
 # =============================================================================
 
-def handle_key_r(state: DeployState, env, base_runner, base_postproc, rag_executor, rag_target_node, rag_output_json):
+def handle_key_r(state: DeployState, env, base_runner, base_postproc, rag_executor, rag_target_node, rag_output_json, trace_manager=None):
     if not env.env.is_key_pressed_once(key=glfw.KEY_R):
         return
 
@@ -312,6 +343,8 @@ def handle_key_r(state: DeployState, env, base_runner, base_postproc, rag_execut
         return
 
     if state.auto_mode_base:
+        if trace_manager is not None:
+            trace_manager.stop_base_episode(reason='rag_navigation_takeover')
         state.deactivate_base_auto(base_runner, base_postproc, reset_runner_state=False)
         print("\n🔁 [R] BASE PI0 auto control stopped before RAG navigation.")
 

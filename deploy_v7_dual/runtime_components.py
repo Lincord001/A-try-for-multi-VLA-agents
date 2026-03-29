@@ -138,6 +138,27 @@ class ActionSmoother:
         self.last_gripper_cmd = None
         self.gripper_state = False
 
+    def prime_from_state(self, current_state):
+        """用当前真实机器人状态对齐平滑器，避免恢复接管时第一帧跳变。"""
+        if current_state is None:
+            self.reset()
+            return
+        state = np.asarray(current_state, dtype=np.float64).reshape(-1)
+        if state.shape[0] < self.joint_dim:
+            self.reset()
+            return
+        self.last_joint_angles = state[: self.joint_dim].copy()
+        if state.shape[0] > self.joint_dim:
+            gripper_cmd = float(state[self.joint_dim])
+            self.last_gripper_cmd = gripper_cmd
+            if self.gripper_hysteresis_enabled:
+                if gripper_cmd > self.gripper_open_thresh:
+                    self.gripper_state = True
+                elif gripper_cmd < self.gripper_close_thresh:
+                    self.gripper_state = False
+            else:
+                self.gripper_state = gripper_cmd > 0.5
+
     def smooth_action(self, raw_action):
         """
         平滑处理动作。

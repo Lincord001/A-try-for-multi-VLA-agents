@@ -51,6 +51,7 @@ class DeployState:
 
     # ---------- 自动检测 ----------
     auto_check_enabled: bool = False
+    arm_vlm_pause_active: bool = False
 
     # ---------- 步计数 ----------
     step: int = 0
@@ -132,6 +133,7 @@ class DeployState:
             disable_auto_check=disable_auto_check,
             reset_runner_state=reset_runner_state,
         )
+        self.arm_vlm_pause_active = False
 
     def deactivate_base_auto(self, base_runner, base_postproc, reset_runner_state=False):
         """停止 BASE 自动控制，可选清理 runner 状态。"""
@@ -156,6 +158,7 @@ class DeployState:
             arm_sync_inference=ARM_SYNC_INFERENCE,
             enable_auto_check=enable_auto_check,
         )
+        self.arm_vlm_pause_active = False
         if reset_timer:
             self.reset_task_timer(env)
 

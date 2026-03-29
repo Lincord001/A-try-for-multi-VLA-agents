@@ -88,6 +88,13 @@ from deploy_v7_dual.config import (
     RAG_EMBEDDING_MODEL,
     RAG_RETRIEVE_MAX_RETRY,
     RAG_RETRIEVE_RETRY_WAIT,
+    EXECUTION_TRACE_ENABLED,
+    EXECUTION_TRACE_OUTPUT_DIR,
+    EXECUTION_TRACE_FLUSH_EVERY,
+    EXECUTION_TRACE_EVALUATE_TRACKER,
+    ARM_VLM_ORCHESTRATION_ENABLED,
+    ARM_VLM_CHECK_OUTPUT_DIR,
+    ARM_VLM_MODEL,
 )
 from deploy_v7_dual.runtime_components import (
     ActionSmoother,
@@ -109,7 +116,9 @@ from deploy_v7_dual.key_handlers import (
 )
 from deploy_v7_dual.control_loop import (
     check_auto_result,
+    handle_arm_orchestrator_event,
     step_arm_auto,
+    step_arm_recovery,
     step_arm_manual,
     step_base_auto,
     step_base_manual,
@@ -121,6 +130,8 @@ from deploy_v7_dual.ui_prints import (
     print_action_smoother_config,
     print_controls_guide,
 )
+from deploy_v7_dual.execution_trace_manager import ExecutionTraceManager
+from deploy_v7_dual.arm_vlm_orchestrator import ArmVLMOrchestrator
 
 from mujoco_env.instruction_utils import (
     validate_instruction_groups as _validate_instruction_groups,
@@ -246,6 +257,23 @@ def main():
         reinitialize_arm=(state.control_mode == 'arm'),
     )
     state.reset_task_timer(PnPEnv)
+    trace_manager = ExecutionTraceManager(
+        enabled=EXECUTION_TRACE_ENABLED,
+        output_dir=EXECUTION_TRACE_OUTPUT_DIR,
+        flush_every=EXECUTION_TRACE_FLUSH_EVERY,
+        evaluate_tracker=EXECUTION_TRACE_EVALUATE_TRACKER,
+        metadata={
+            "control_frequency": CONTROL_FREQUENCY,
+            "arm_inference_mode": ARM_INFERENCE_MODE,
+            "arm_model_path": ARM_CONFIG.get("model_path"),
+            "base_model_path": BASE_CONFIG.get("model_path"),
+        },
+    )
+    arm_orchestrator = ArmVLMOrchestrator(
+        enabled=ARM_VLM_ORCHESTRATION_ENABLED,
+        output_dir=ARM_VLM_CHECK_OUTPUT_DIR,
+        model=ARM_VLM_MODEL,
+    )
 
     # 4. 初始化图像预处理
     IMG_TRANSFORM = get_default_transform()
@@ -353,16 +381,16 @@ def main():
 
                 # --- 键位处理 ---
                 handle_key_c(state, PnPEnv, arm_policy, arm_runner, base_runner,
-                             arm_smoother, base_postproc)
+                             arm_smoother, base_postproc, trace_manager, arm_orchestrator)
                 handle_arrow_keys(state, PnPEnv)
                 handle_key_n(state, PnPEnv, arm_policy, arm_runner,
-                             arm_smoother, base_runner, base_postproc)
+                             arm_smoother, base_runner, base_postproc, trace_manager, arm_orchestrator)
                 handle_key_m(state, PnPEnv, arm_runner, arm_smoother,
-                             base_runner, base_postproc)
+                             base_runner, base_postproc, trace_manager, arm_orchestrator)
                 handle_key_z(state, PnPEnv, arm_policy, arm_runner,
-                             base_runner, arm_smoother, base_postproc)
+                             base_runner, arm_smoother, base_postproc, trace_manager, arm_orchestrator)
                 handle_key_k(state, PnPEnv, base_postproc)
-                handle_key_l(state, PnPEnv, arm_policy, arm_runner, arm_smoother)
+                handle_key_l(state, PnPEnv, arm_policy, arm_runner, arm_smoother, trace_manager, arm_orchestrator)
                 handle_key_g(state, PnPEnv)
                 handle_key_t(state, PnPEnv, rag_navigator)
                 handle_key_r(
@@ -373,18 +401,54 @@ def main():
                     rag_executor,
                     RAG_TARGET_NODE,
                     RAG_DENSE_OUTPUT_JSON,
+                    trace_manager,
                 )
 
                 # --- 控制逻辑 ---
                 if state.control_mode == 'arm':
                     # 自动检测成功 + 超时判定（仅在L键开启后生效）
                     if check_auto_result(state, PnPEnv, arm_policy,
-                                         arm_runner, arm_smoother):
+                                         arm_runner, arm_smoother, trace_manager, arm_orchestrator):
                         break
 
-                    if state.auto_mode_arm and arm_policy is not None:
-                        step_arm_auto(state, PnPEnv, arm_policy, arm_runner,
-                                      arm_smoother, IMG_TRANSFORM, device)
+                    if arm_orchestrator.enabled and arm_orchestrator.recovery_active:
+                        recovery_done = step_arm_recovery(state, PnPEnv, arm_orchestrator)
+                        if recovery_done:
+                            arm_orchestrator.finalize_recovery_handoff(
+                                PnPEnv,
+                                arm_policy,
+                                arm_runner,
+                                arm_smoother,
+                            )
+                    elif state.arm_vlm_pause_active and arm_orchestrator.enabled:
+                        arm_event = arm_orchestrator.process_pending_check()
+                        if arm_event:
+                            handle_arm_orchestrator_event(
+                                state,
+                                PnPEnv,
+                                arm_policy,
+                                arm_runner,
+                                arm_smoother,
+                                arm_event,
+                                trace_manager=trace_manager,
+                                arm_orchestrator=arm_orchestrator,
+                            )
+                        else:
+                            PnPEnv.render(teleop=False, idx=state.step)
+                    elif state.auto_mode_arm and arm_policy is not None:
+                        arm_event = step_arm_auto(state, PnPEnv, arm_policy, arm_runner,
+                                      arm_smoother, IMG_TRANSFORM, device, trace_manager, arm_orchestrator)
+                        if arm_event:
+                            handle_arm_orchestrator_event(
+                                state,
+                                PnPEnv,
+                                arm_policy,
+                                arm_runner,
+                                arm_smoother,
+                                arm_event,
+                                trace_manager=trace_manager,
+                                arm_orchestrator=arm_orchestrator,
+                            )
                     else:
                         step_arm_manual(state, PnPEnv, teleop)
 
@@ -392,7 +456,7 @@ def main():
                     if state.nav_mode_active:
                         step_base_nav(state, PnPEnv)
                     elif state.auto_mode_base and base_runner:
-                        step_base_auto(state, PnPEnv, base_runner, base_postproc)
+                        step_base_auto(state, PnPEnv, base_runner, base_postproc, trace_manager)
                     else:
                         step_base_manual(state, PnPEnv, teleop,
                                          base_runner, base_postproc)
@@ -430,6 +494,8 @@ def main():
             print("\n📊 No task statistics to output (L-key auto-detection mode was not used).")
 
         # 清理
+        trace_manager.close()
+        arm_orchestrator.on_auto_stop('session_close')
         if arm_runner and arm_runner.running:
             arm_runner.stop()
         if base_runner and base_runner.running:
