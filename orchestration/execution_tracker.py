@@ -7,7 +7,9 @@ The tracker is designed for VLA-controlled terminal phases:
 It intentionally does not rely on task ground-truth signals.
 
 Behavior by mode:
-- ``base_vla`` keeps the original terminal oscillation completion heuristic.
+- ``base_vla`` uses either:
+  - a terminal pose-lock heuristic for goal snaps while the controller still drives, or
+  - the original terminal oscillation completion heuristic.
 - ``arm_vla`` no longer directly decides task success. Instead it detects:
   - tail-event candidates: ``closed grasp -> low place point -> release -> lift``
   - timeout checks when no tail event appears for too long
@@ -107,6 +109,21 @@ class ExecutionTrackerConfig:
     base_oscillation_radius: float = 0.03
     base_wheel_vel_deadband: float = 1.2
     base_action_deadband: float = 1.0
+    base_lock_window_seconds: float = 0.2
+    base_lock_pre_window_seconds: float = 0.45
+    base_lock_stationary_radius: float = 0.0015
+    base_lock_path_length: float = 0.0025
+    base_lock_yaw_delta: float = math.radians(1.0)
+    base_lock_step_radius: float = 0.0005
+    base_lock_step_yaw_delta: float = math.radians(0.12)
+    base_lock_min_pre_path: float = 0.004
+    base_lock_min_pre_yaw_delta: float = math.radians(0.8)
+    base_lock_min_action_norm: float = 8.0
+    base_lock_min_wheel_speed: float = 6.0
+    base_lock_confirmation_count: int = 3
+    base_lock_confirmation_cooldown_seconds: float = 0.2
+    base_lock_confirmation_yaw_delta: float = math.radians(6.0)
+    base_lock_confirmation_position_radius: float = 0.03
 
     arm_tcp_stationary_radius: float = 0.035
     arm_tcp_stationary_angle: float = math.radians(10.0)
@@ -144,6 +161,21 @@ BASE_VLA_PROFILE = ExecutionTrackerConfig(
     base_oscillation_radius=0.035,
     base_wheel_vel_deadband=1.5,
     base_action_deadband=1.4,
+    base_lock_window_seconds=0.2,
+    base_lock_pre_window_seconds=0.45,
+    base_lock_stationary_radius=0.0015,
+    base_lock_path_length=0.0025,
+    base_lock_yaw_delta=math.radians(1.0),
+    base_lock_step_radius=0.0005,
+    base_lock_step_yaw_delta=math.radians(0.12),
+    base_lock_min_pre_path=0.004,
+    base_lock_min_pre_yaw_delta=math.radians(0.8),
+    base_lock_min_action_norm=8.0,
+    base_lock_min_wheel_speed=6.0,
+    base_lock_confirmation_count=3,
+    base_lock_confirmation_cooldown_seconds=0.2,
+    base_lock_confirmation_yaw_delta=math.radians(6.0),
+    base_lock_confirmation_position_radius=0.03,
 )
 
 ARM_VLA_PROFILE = ExecutionTrackerConfig(
@@ -203,6 +235,8 @@ class ExecutionTracker:
         self._timeout_event_time: Optional[float] = None
         self._last_arm_event_time: Optional[float] = None
         self._arm_resume_blocked_until: Optional[float] = None
+        self._base_lock_events: List[Dict[str, object]] = []
+        self._base_lock_blocked_until: Optional[float] = None
         self._last_debug: Dict[str, object] = {
             "state": self.state,
             "reason": "reset",
@@ -230,6 +264,17 @@ class ExecutionTracker:
             self.state = STATE_COMPLETED
             metrics["state"] = self.state
             return self._result(True, 1.0, "already_completed", metrics)
+
+        if self.mode == MODE_BASE_VLA and self._is_base_pose_lock_candidate(metrics, cfg):
+            pose_lock_confirmed = self._register_base_pose_lock_event(normalized, metrics, cfg)
+            metrics["base_pose_lock_confirmed"] = pose_lock_confirmed
+            if pose_lock_confirmed:
+                self.state = STATE_COMPLETED
+                self.completed_once = True
+                metrics["state"] = self.state
+                metrics["reason"] = "base_pose_lock_detected"
+                return self._result(True, 0.99, "base_pose_lock_detected", metrics)
+            reason = "base_pose_lock_waiting_confirmation"
 
         if self.state == STATE_SEEKING:
             if self._has_sufficient_activation(metrics, cfg):
@@ -435,6 +480,8 @@ class ExecutionTracker:
         elif not oscillating:
             reason = "base_terminal_oscillation_not_detected"
 
+        pose_lock_metrics = self._compute_base_pose_lock_metrics(samples, cfg)
+
         return {
             "net_progress": net_progress,
             "recent_progress": recent_progress,
@@ -448,6 +495,7 @@ class ExecutionTracker:
             "progress_stalled": progress_stalled,
             "oscillating": oscillating,
             "reason": reason,
+            **pose_lock_metrics,
         }
 
     def _compute_arm_metrics(
@@ -752,6 +800,65 @@ class ExecutionTracker:
             or float(metrics.get("active_elapsed", 0.0)) >= cfg.min_active_seconds
         )
 
+    def _is_base_pose_lock_candidate(self, metrics: Dict[str, object], cfg: ExecutionTrackerConfig) -> bool:
+        if float(metrics.get("active_elapsed", 0.0)) < cfg.min_active_seconds:
+            return False
+        if float(metrics.get("net_progress", 0.0)) < cfg.min_progress_distance:
+            return False
+        return bool(metrics.get("base_pose_lock_candidate", False))
+
+    def _register_base_pose_lock_event(
+        self,
+        sample: TrackerSample,
+        metrics: Dict[str, object],
+        cfg: ExecutionTrackerConfig,
+    ) -> bool:
+        now = float(sample.timestamp)
+        if self._base_lock_blocked_until is not None and now < self._base_lock_blocked_until:
+            metrics["base_lock_event_count"] = len(self._base_lock_events)
+            return False
+
+        yaw = float(sample.base_yaw or 0.0)
+        xy = np.asarray(sample.base_xy, dtype=np.float64).copy()
+        event = {
+            "time": now,
+            "yaw": yaw,
+            "xy": xy,
+        }
+
+        events = list(self._base_lock_events)
+        if events:
+            yaw_span = max(abs(_wrap_to_pi(yaw - float(e["yaw"]))) for e in events)
+            pos_span = max(float(np.linalg.norm(xy - np.asarray(e["xy"], dtype=np.float64))) for e in events)
+            if (
+                yaw_span > cfg.base_lock_confirmation_yaw_delta
+                or pos_span > cfg.base_lock_confirmation_position_radius
+            ):
+                events = []
+
+        events.append(event)
+        self._base_lock_events = events[-cfg.base_lock_confirmation_count:]
+        self._base_lock_blocked_until = now + cfg.base_lock_confirmation_cooldown_seconds
+
+        yaw_values = [float(e["yaw"]) for e in self._base_lock_events]
+        pos_values = [np.asarray(e["xy"], dtype=np.float64) for e in self._base_lock_events]
+        yaw_span = 0.0 if len(yaw_values) <= 1 else max(
+            abs(_wrap_to_pi(v - yaw_values[0])) for v in yaw_values
+        )
+        pos_span = 0.0 if len(pos_values) <= 1 else max(
+            float(np.linalg.norm(v - pos_values[0])) for v in pos_values
+        )
+
+        metrics["base_lock_event_count"] = len(self._base_lock_events)
+        metrics["base_lock_event_yaw_span"] = yaw_span
+        metrics["base_lock_event_position_span"] = pos_span
+
+        return (
+            len(self._base_lock_events) >= cfg.base_lock_confirmation_count
+            and yaw_span <= cfg.base_lock_confirmation_yaw_delta
+            and pos_span <= cfg.base_lock_confirmation_position_radius
+        )
+
     def _is_settling_candidate(self, metrics: Dict[str, object], cfg: ExecutionTrackerConfig) -> bool:
         if float(metrics.get("active_elapsed", 0.0)) < cfg.min_active_seconds:
             return False
@@ -838,6 +945,86 @@ class ExecutionTracker:
 
     def _recent_window(self, start_ts: float, end_ts: float) -> List[TrackerSample]:
         return [s for s in self.samples if start_ts <= s.timestamp <= end_ts]
+
+    def _compute_base_pose_lock_metrics(
+        self,
+        samples: List[TrackerSample],
+        cfg: ExecutionTrackerConfig,
+    ) -> Dict[str, object]:
+        if len(samples) < 3:
+            return {
+                "base_pose_lock_candidate": False,
+            }
+
+        now = samples[-1].timestamp
+        recent_window = self._recent_window(now - cfg.base_lock_window_seconds, now)
+        pre_window = self._recent_window(
+            now - (cfg.base_lock_window_seconds + cfg.base_lock_pre_window_seconds),
+            now - cfg.base_lock_window_seconds,
+        )
+        if len(recent_window) < 2:
+            recent_window = samples[-min(len(samples), 4):]
+        if len(pre_window) < 2:
+            prefix_len = max(len(samples) - len(recent_window), 0)
+            pre_window = samples[max(0, prefix_len - 5):prefix_len]
+
+        recent_positions = np.stack([s.base_xy for s in recent_window], axis=0)
+        recent_center = np.mean(recent_positions, axis=0)
+        recent_span = float(np.max(np.linalg.norm(recent_positions - recent_center, axis=1)))
+        recent_path_length = float(np.sum(np.linalg.norm(np.diff(recent_positions, axis=0), axis=1))) if len(recent_positions) > 1 else 0.0
+        recent_yaws = np.asarray([float(s.base_yaw) for s in recent_window], dtype=np.float64)
+        recent_yaw_span = float(
+            np.max(np.abs(np.asarray([_wrap_to_pi(y - recent_yaws[0]) for y in recent_yaws], dtype=np.float64)))
+        ) if len(recent_yaws) > 0 else 0.0
+
+        prev_sample = recent_window[-2]
+        curr_sample = recent_window[-1]
+        last_step_move = float(np.linalg.norm(curr_sample.base_xy - prev_sample.base_xy))
+        last_step_yaw = abs(_wrap_to_pi(float(curr_sample.base_yaw) - float(prev_sample.base_yaw)))
+
+        if len(pre_window) >= 2:
+            pre_positions = np.stack([s.base_xy for s in pre_window], axis=0)
+            pre_path_length = float(np.sum(np.linalg.norm(np.diff(pre_positions, axis=0), axis=1)))
+            pre_yaws = np.asarray([float(s.base_yaw) for s in pre_window], dtype=np.float64)
+            pre_yaw_span = float(
+                np.max(np.abs(np.asarray([_wrap_to_pi(y - pre_yaws[0]) for y in pre_yaws], dtype=np.float64)))
+            )
+        else:
+            pre_path_length = 0.0
+            pre_yaw_span = 0.0
+
+        recent_action_norms = self._recent_action_norms(recent_window)
+        drive_action_norm = 0.0 if recent_action_norms is None or len(recent_action_norms) == 0 else float(np.median(recent_action_norms))
+        recent_wheel_speed = np.asarray(
+            [float(np.linalg.norm(s.wheel_vel)) for s in recent_window if s.wheel_vel is not None],
+            dtype=np.float64,
+        )
+        drive_wheel_speed = 0.0 if len(recent_wheel_speed) == 0 else float(np.median(recent_wheel_speed))
+
+        pose_lock_candidate = (
+            recent_span <= cfg.base_lock_stationary_radius
+            and recent_path_length <= cfg.base_lock_path_length
+            and recent_yaw_span <= cfg.base_lock_yaw_delta
+            and last_step_move <= cfg.base_lock_step_radius
+            and last_step_yaw <= cfg.base_lock_step_yaw_delta
+            and pre_path_length >= cfg.base_lock_min_pre_path
+            and pre_yaw_span >= cfg.base_lock_min_pre_yaw_delta
+            and drive_action_norm >= cfg.base_lock_min_action_norm
+            and drive_wheel_speed >= cfg.base_lock_min_wheel_speed
+        )
+
+        return {
+            "base_lock_recent_span": recent_span,
+            "base_lock_recent_path_length": recent_path_length,
+            "base_lock_recent_yaw_span": recent_yaw_span,
+            "base_lock_last_step_move": last_step_move,
+            "base_lock_last_step_yaw": last_step_yaw,
+            "base_lock_pre_path_length": pre_path_length,
+            "base_lock_pre_yaw_span": pre_yaw_span,
+            "base_lock_drive_action_norm": drive_action_norm,
+            "base_lock_drive_wheel_speed": drive_wheel_speed,
+            "base_pose_lock_candidate": pose_lock_candidate,
+        }
 
     def _recent_action_norms(self, recent: List[TrackerSample]) -> Optional[np.ndarray]:
         action_vectors = [s.action for s in recent if s.action is not None]

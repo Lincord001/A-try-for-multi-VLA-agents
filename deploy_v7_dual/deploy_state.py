@@ -14,6 +14,8 @@ from typing import Optional
 
 import numpy as np
 
+from orchestration.execution_tracker import BASE_VLA_PROFILE, ExecutionTracker
+
 from .control_helpers import (
     clear_runtime_state as _clear_runtime_state,
     deactivate_arm_auto as _deactivate_arm_auto,
@@ -52,6 +54,15 @@ class DeployState:
     # ---------- 自动检测 ----------
     auto_check_enabled: bool = False
     arm_vlm_pause_active: bool = False
+    base_execution_tracker: Optional[ExecutionTracker] = dataclasses.field(
+        default_factory=lambda: ExecutionTracker(BASE_VLA_PROFILE)
+    )
+    base_nudge_active: bool = False
+    base_nudge_start_time: float = 0.0
+    base_nudge_start_xy: Optional[np.ndarray] = None
+    base_nudge_heading_yaw: float = 0.0
+    base_nudge_last_progress_time: float = 0.0
+    base_nudge_last_progress_dist: float = 0.0
 
     # ---------- 步计数 ----------
     step: int = 0
@@ -143,6 +154,14 @@ class DeployState:
             base_postproc=base_postproc,
             reset_runner_state=reset_runner_state,
         )
+        self.base_nudge_active = False
+        self.base_nudge_start_time = 0.0
+        self.base_nudge_start_xy = None
+        self.base_nudge_heading_yaw = 0.0
+        self.base_nudge_last_progress_time = 0.0
+        self.base_nudge_last_progress_dist = 0.0
+        if self.base_execution_tracker is not None:
+            self.base_execution_tracker.reset()
 
     def activate_arm_auto(self, arm_policy, arm_runner, arm_smoother,
                           enable_auto_check=False, reset_timer=False, env=None):

@@ -19,6 +19,7 @@ from PIL import Image
 from mujoco_env.instruction_utils import (
     apply_instruction_from_group as _apply_instruction_from_group,
 )
+from orchestration.execution_tracker import TrackerSample
 
 from .deploy_state import DeployState
 from .task_runtime import get_target_cup_init, perform_auto_reset
@@ -40,6 +41,13 @@ from .config import (
     RAG_MAX_TURN_SPEED,
     RAG_SLOWDOWN_RADIUS,
     RAG_HEADING_DEADBAND,
+    BASE_POST_STOP_NUDGE_ENABLED,
+    BASE_POST_STOP_NUDGE_MAX_DISTANCE,
+    BASE_POST_STOP_NUDGE_MAX_SECONDS,
+    BASE_POST_STOP_NUDGE_STALL_PROGRESS,
+    BASE_POST_STOP_NUDGE_STALL_SECONDS,
+    BASE_POST_STOP_NUDGE_WHEEL_SPEED,
+    BASE_POST_STOP_NUDGE_YAW_TOL,
 )
 from mujoco_env.visualization import (
     append_step_log,
@@ -512,21 +520,33 @@ def step_base_auto(state: DeployState, env, base_runner, base_postproc, trace_ma
     # 1. 收集观测数据
     robot_state = env.get_base_state()   # (4,) [轮速 + 朝向sin/cos]
     images_dict = env.grab_image()        # {'front', 'left', 'right'}
+    p_tb3, R_tb3 = env.env.get_pR_body('tb3_base')
+    yaw = float(np.arctan2(float(R_tb3[1, 0]), float(R_tb3[0, 0])))
 
     obs_capture_time = time.time()
 
     # 2. 更新观测到推理线程
-    base_runner.update_observation(
-        images_dict, robot_state, [env.instruction], obs_capture_time
-    )
+    if not state.base_nudge_active:
+        base_runner.update_observation(
+            images_dict, robot_state, [env.instruction], obs_capture_time
+        )
 
     # 3. 获取动作
-    action_step, _status_msg = base_runner.get_action_at_time(time.time())
+    action_step = None
+    if not state.base_nudge_active:
+        action_step, _status_msg = base_runner.get_action_at_time(time.time())
 
     # 4. 执行动作
     applied_action = None
-    if action_step is not None:
-        yaw = float(np.arctan2(float(robot_state[2]), float(robot_state[3])))
+    action_tag = 'base_auto_step'
+    if state.base_nudge_active:
+        applied_action = np.array(
+            [BASE_POST_STOP_NUDGE_WHEEL_SPEED, BASE_POST_STOP_NUDGE_WHEEL_SPEED],
+            dtype=np.float32,
+        )
+        env.step(applied_action, mode='base')
+        action_tag = 'base_post_stop_nudge'
+    elif action_step is not None:
         action_step = base_postproc.process(action_step, yaw)
         env.step(action_step, mode='base')
         applied_action = action_step
@@ -540,8 +560,101 @@ def step_base_auto(state: DeployState, env, base_runner, base_postproc, trace_ma
             env,
             applied_action,
             step=state.step,
-            tag='base_auto_step',
+            tag=action_tag,
         )
+
+    if state.base_execution_tracker is not None:
+        p_tb3_now, R_tb3_now = env.env.get_pR_body('tb3_base')
+        base_xy = np.array([float(p_tb3_now[0]), float(p_tb3_now[1])], dtype=np.float64)
+        yaw_now = float(np.arctan2(float(R_tb3_now[1, 0]), float(R_tb3_now[0, 0])))
+        wheel_state = env.get_base_state()
+        tracker_result = state.base_execution_tracker.update(
+            TrackerSample(
+                timestamp=obs_capture_time,
+                base_xy=base_xy,
+                base_yaw=yaw_now,
+                wheel_vel=np.asarray(wheel_state[:2], dtype=np.float64),
+                action=None if applied_action is None else np.asarray(applied_action, dtype=np.float64),
+            )
+        )
+    else:
+        tracker_result = None
+
+    if (
+        tracker_result is not None
+        and tracker_result.completed
+        and tracker_result.reason == 'base_pose_lock_detected'
+        and not state.base_nudge_active
+        and BASE_POST_STOP_NUDGE_ENABLED
+    ):
+        state.base_nudge_active = True
+        state.base_nudge_start_time = obs_capture_time
+        state.base_nudge_start_xy = base_xy.copy()
+        state.base_nudge_heading_yaw = yaw_now
+        state.base_nudge_last_progress_time = obs_capture_time
+        state.base_nudge_last_progress_dist = 0.0
+        base_runner.reset_state()
+        base_postproc.reset()
+        print("\n🚗 [BASE] Pose lock detected, starting short forward nudge.")
+    elif (
+        tracker_result is not None
+        and tracker_result.completed
+        and not state.base_nudge_active
+    ):
+        state.deactivate_base_auto(base_runner, base_postproc, reset_runner_state=True)
+        if trace_manager is not None:
+            trace_manager.stop_base_episode(
+                reason='base_tracker_completed',
+                extra={
+                    'step': state.step,
+                    'tracker_reason': tracker_result.reason,
+                },
+            )
+        print(f"\n🚗 [BASE] Auto control stopped by tracker: {tracker_result.reason}")
+
+    if state.base_nudge_active and state.base_nudge_start_xy is not None:
+        p_tb3_now, R_tb3_now = env.env.get_pR_body('tb3_base')
+        curr_xy = np.array([float(p_tb3_now[0]), float(p_tb3_now[1])], dtype=np.float64)
+        curr_yaw = float(np.arctan2(float(R_tb3_now[1, 0]), float(R_tb3_now[0, 0])))
+        heading = np.array(
+            [float(np.cos(state.base_nudge_heading_yaw)), float(np.sin(state.base_nudge_heading_yaw))],
+            dtype=np.float64,
+        )
+        progress_vec = curr_xy - state.base_nudge_start_xy
+        forward_progress = float(np.dot(progress_vec, heading))
+        elapsed = obs_capture_time - state.base_nudge_start_time
+        yaw_error = abs(_wrap_to_pi(curr_yaw - state.base_nudge_heading_yaw))
+
+        if forward_progress > state.base_nudge_last_progress_dist + BASE_POST_STOP_NUDGE_STALL_PROGRESS:
+            state.base_nudge_last_progress_dist = forward_progress
+            state.base_nudge_last_progress_time = obs_capture_time
+
+        stop_reason = None
+        if yaw_error > BASE_POST_STOP_NUDGE_YAW_TOL:
+            stop_reason = 'yaw_drift'
+        elif forward_progress >= BASE_POST_STOP_NUDGE_MAX_DISTANCE:
+            stop_reason = 'distance_limit'
+        elif elapsed >= BASE_POST_STOP_NUDGE_MAX_SECONDS:
+            stop_reason = 'timeout'
+        elif obs_capture_time - state.base_nudge_last_progress_time >= BASE_POST_STOP_NUDGE_STALL_SECONDS:
+            stop_reason = 'blocked'
+
+        if stop_reason is not None:
+            state.deactivate_base_auto(base_runner, base_postproc, reset_runner_state=True)
+            if trace_manager is not None:
+                trace_manager.stop_base_episode(
+                    reason='base_post_stop_nudge_complete',
+                    extra={
+                        'step': state.step,
+                        'nudge_stop_reason': stop_reason,
+                        'nudge_elapsed': elapsed,
+                        'nudge_forward_progress': forward_progress,
+                    },
+                )
+            print(
+                "\n🚗 [BASE] Post-stop nudge finished: "
+                f"reason={stop_reason} elapsed={elapsed:.2f}s progress={forward_progress:.3f}m"
+            )
 
     # 5. 渲染 & 步数
     env.render(teleop=False, idx=state.step)

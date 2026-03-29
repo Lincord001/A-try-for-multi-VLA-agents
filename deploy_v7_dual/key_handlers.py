@@ -127,6 +127,14 @@ def handle_key_n(state: DeployState, env, arm_policy, arm_runner,
         if base_runner is not None and not state.auto_mode_base:
             state.stop_navigation()
             state.auto_mode_base = True
+            state.base_nudge_active = False
+            state.base_nudge_start_time = 0.0
+            state.base_nudge_start_xy = None
+            state.base_nudge_heading_yaw = 0.0
+            state.base_nudge_last_progress_time = 0.0
+            state.base_nudge_last_progress_dist = 0.0
+            if state.base_execution_tracker is not None:
+                state.base_execution_tracker.reset(mode="base_vla", instruction=getattr(env, "instruction", None))
             base_postproc.reset()
             base_runner.start()
             if trace_manager is not None:
