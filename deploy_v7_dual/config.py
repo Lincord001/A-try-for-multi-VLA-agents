@@ -114,7 +114,7 @@ GRIPPER_CLOSE_THRESH = 0.25
 # 🔧 模型加载选择
 # ==========================================
 LOAD_ARM_MODEL = False
-LOAD_BASE_MODEL = False 
+LOAD_BASE_MODEL = True 
 
 # ==========================================
 # 🔧 Arm 模式难度选择
@@ -160,3 +160,9 @@ RAG_MACRO_MODEL = "qwen-max"
 RAG_EMBEDDING_MODEL = "text-embedding-v4"
 RAG_RETRIEVE_MAX_RETRY = 3
 RAG_RETRIEVE_RETRY_WAIT = 1.5
+RAG_TO_VLA_AUTO_HANDOFF_ENABLED = True
+VLA_RAG_CACHE_JSON = "./topology_output/base_vla_instruction_embeddings.json"
+VLA_RAG_TOP_K = 3
+VLA_RAG_QUERY_WEIGHT = 0.2
+VLA_RAG_CLUSTER_WEIGHT = 0.5
+VLA_RAG_TARGET_WEIGHT = 0.3

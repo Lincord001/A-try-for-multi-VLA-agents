@@ -33,6 +33,7 @@ Base 模式：
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 print("Setting up environment variables for Hugging Face...")
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
@@ -88,6 +89,11 @@ from deploy_v7_dual.config import (
     RAG_EMBEDDING_MODEL,
     RAG_RETRIEVE_MAX_RETRY,
     RAG_RETRIEVE_RETRY_WAIT,
+    VLA_RAG_CACHE_JSON,
+    VLA_RAG_TOP_K,
+    VLA_RAG_QUERY_WEIGHT,
+    VLA_RAG_CLUSTER_WEIGHT,
+    VLA_RAG_TARGET_WEIGHT,
     EXECUTION_TRACE_ENABLED,
     EXECUTION_TRACE_OUTPUT_DIR,
     EXECUTION_TRACE_FLUSH_EVERY,
@@ -113,6 +119,7 @@ from deploy_v7_dual.key_handlers import (
     handle_key_g,
     handle_key_r,
     handle_key_t,
+    process_pending_vla_retrieval,
 )
 from deploy_v7_dual.control_loop import (
     check_auto_result,
@@ -123,6 +130,7 @@ from deploy_v7_dual.control_loop import (
     step_base_auto,
     step_base_manual,
     step_base_nav,
+    step_base_wait_vla_handoff,
 )
 from deploy_v7_dual.ui_prints import (
     print_startup_banner,
@@ -134,6 +142,7 @@ from deploy_v7_dual.execution_trace_manager import ExecutionTraceManager
 from deploy_v7_dual.arm_vlm_orchestrator import ArmVLMOrchestrator
 
 from mujoco_env.instruction_utils import (
+    INSTRUCTION_GROUPS,
     validate_instruction_groups as _validate_instruction_groups,
     apply_instruction_from_group as _apply_instruction_from_group,
 )
@@ -150,6 +159,7 @@ except ImportError as e:
 from mujoco_env.action_utils import BaseActionPostProcessor
 from rag_pipeline.rag_executor import TrajectoryExecutor
 from rag_pipeline.rag_navigator import RAGNavigator, NavigatorArgs
+from rag_pipeline.vla_instruction_rag import VLAInstructionRAG, VLAInstructionRAGArgs
 from mujoco_env.visualization import (
     extract_model_version,
     plot_task_stats,
@@ -355,6 +365,8 @@ def main():
     print_controls_guide(state.control_mode)
     rag_executor = TrajectoryExecutor(RAG_TOPOLOGY_JSON)
     rag_navigator = None
+    vla_instruction_rag = None
+    vla_instruction_executor = None
     try:
         rag_navigator = RAGNavigator(
             NavigatorArgs(
@@ -370,6 +382,28 @@ def main():
         print(f"🧠 [RAG] Navigator loaded: {RAG_FOREST_JSON}")
     except Exception as e:
         print(f"⚠️ [RAG] Navigator init failed, T-key retrieval disabled: {e}")
+    try:
+        vla_instruction_rag = VLAInstructionRAG(
+            VLAInstructionRAGArgs(
+                instruction_groups=list(INSTRUCTION_GROUPS.get('base', [])),
+                embedding_model=RAG_EMBEDDING_MODEL,
+                selection_model=RAG_MACRO_MODEL,
+                cache_json=VLA_RAG_CACHE_JSON,
+                top_k=VLA_RAG_TOP_K,
+                query_weight=VLA_RAG_QUERY_WEIGHT,
+                cluster_weight=VLA_RAG_CLUSTER_WEIGHT,
+                target_weight=VLA_RAG_TARGET_WEIGHT,
+                max_retry=RAG_RETRIEVE_MAX_RETRY,
+                retry_wait=RAG_RETRIEVE_RETRY_WAIT,
+            )
+        )
+        vla_instruction_executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="base_vla_rag",
+        )
+        print(f"🧠 [VLA-RAG] Instruction retriever loaded: {VLA_RAG_CACHE_JSON}")
+    except Exception as e:
+        print(f"⚠️ [VLA-RAG] Instruction retriever init failed, auto handoff retrieval disabled: {e}")
 
     try:
         while PnPEnv.env.is_viewer_alive():
@@ -378,6 +412,7 @@ def main():
 
             # [B] 控制循环
             if PnPEnv.env.loop_every(HZ=CONTROL_FREQUENCY):
+                process_pending_vla_retrieval(state)
 
                 # --- 键位处理 ---
                 handle_key_c(state, PnPEnv, arm_policy, arm_runner, base_runner,
@@ -392,7 +427,13 @@ def main():
                 handle_key_k(state, PnPEnv, base_postproc)
                 handle_key_l(state, PnPEnv, arm_policy, arm_runner, arm_smoother, trace_manager, arm_orchestrator)
                 handle_key_g(state, PnPEnv)
-                handle_key_t(state, PnPEnv, rag_navigator)
+                handle_key_t(
+                    state,
+                    PnPEnv,
+                    rag_navigator,
+                    vla_instruction_rag,
+                    vla_instruction_executor,
+                )
                 handle_key_r(
                     state,
                     PnPEnv,
@@ -454,7 +495,23 @@ def main():
 
                 else:  # base mode
                     if state.nav_mode_active:
-                        step_base_nav(state, PnPEnv)
+                        step_base_nav(
+                            state,
+                            PnPEnv,
+                            base_runner,
+                            base_postproc,
+                            trace_manager,
+                            vla_instruction_rag,
+                        )
+                    elif state.rag_vla_handoff_waiting:
+                        step_base_wait_vla_handoff(
+                            state,
+                            PnPEnv,
+                            base_runner,
+                            base_postproc,
+                            trace_manager,
+                            vla_instruction_rag,
+                        )
                     elif state.auto_mode_base and base_runner:
                         step_base_auto(state, PnPEnv, base_runner, base_postproc, trace_manager)
                     else:
@@ -500,6 +557,8 @@ def main():
             arm_runner.stop()
         if base_runner and base_runner.running:
             base_runner.stop()
+        if vla_instruction_executor is not None:
+            vla_instruction_executor.shutdown(wait=False, cancel_futures=True)
         if PnPEnv.env.viewer:
             PnPEnv.env.close_viewer()
         print("🛑 Environment closed.")

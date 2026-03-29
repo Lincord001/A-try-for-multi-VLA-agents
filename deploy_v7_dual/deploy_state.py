@@ -10,7 +10,7 @@ DeployState: 持有主循环中所有共享可变状态的数据类。
 
 import time
 import dataclasses
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -95,6 +95,15 @@ class DeployState:
     rag_query_text: Optional[str] = None
     rag_retrieved_target_node: Optional[str] = None
     rag_retrieval_meta: dict = dataclasses.field(default_factory=dict)
+    rag_vla_query_text: Optional[str] = None
+    rag_vla_instruction: Optional[str] = None
+    rag_vla_instruction_meta: dict = dataclasses.field(default_factory=dict)
+    rag_vla_pending_future: Optional[Any] = None
+    rag_vla_request_seq: int = 0
+    rag_vla_pending_request_id: int = 0
+    rag_vla_retrieval_pending: bool = False
+    rag_vla_retrieval_error: Optional[str] = None
+    rag_vla_handoff_waiting: bool = False
 
     # ---------- 自动重置选项（从 config 读取，主程序初始化后传入） ----------
     auto_reset_options: dict = dataclasses.field(default_factory=lambda: {
@@ -206,3 +215,11 @@ class DeployState:
         self.rag_query_text = None
         self.rag_retrieved_target_node = None
         self.rag_retrieval_meta = {}
+        self.rag_vla_query_text = None
+        self.rag_vla_instruction = None
+        self.rag_vla_instruction_meta = {}
+        self.rag_vla_pending_future = None
+        self.rag_vla_pending_request_id = 0
+        self.rag_vla_retrieval_pending = False
+        self.rag_vla_retrieval_error = None
+        self.rag_vla_handoff_waiting = False

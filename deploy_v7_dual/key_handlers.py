@@ -6,6 +6,8 @@ key_handlers.py
 每个函数接受 DeployState 和相关依赖，直接修改 state，不使用 nonlocal。
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 import glfw
 import numpy as np
 
@@ -17,6 +19,48 @@ from mujoco_env.instruction_utils import (
 
 from .deploy_state import DeployState
 from .config import ARM_SYNC_INFERENCE
+
+
+def _submit_vla_retrieval(vla_instruction_rag, request_id, query, cluster_caption, target_caption):
+    result = vla_instruction_rag.retrieve_instruction(
+        query=query,
+        cluster_caption=cluster_caption,
+        target_caption=target_caption,
+    )
+    result["request_id"] = int(request_id)
+    return result
+
+
+def process_pending_vla_retrieval(state: DeployState):
+    future = state.rag_vla_pending_future
+    if future is None or not state.rag_vla_retrieval_pending:
+        return
+    if not future.done():
+        return
+
+    request_id = int(state.rag_vla_pending_request_id)
+    state.rag_vla_pending_future = None
+    state.rag_vla_retrieval_pending = False
+
+    try:
+        vla_result = future.result()
+    except Exception as exc:
+        state.rag_vla_instruction = None
+        state.rag_vla_instruction_meta = {}
+        state.rag_vla_retrieval_error = str(exc)
+        print(f"\n⚠️ [VLA-RAG] Async retrieval failed: {exc}")
+        return
+
+    if int(vla_result.get("request_id", -1)) != request_id:
+        return
+
+    state.rag_vla_instruction = str(vla_result["instruction"])
+    state.rag_vla_instruction_meta = dict(vla_result)
+    state.rag_vla_retrieval_error = None
+    print(
+        f"\n🧠 [VLA-RAG] Async retrieval ready: {state.rag_vla_instruction} "
+        f"| group={vla_result['group_name']} | score={vla_result['score']:.6f}"
+    )
 
 
 # =============================================================================
@@ -45,6 +89,7 @@ def handle_key_c(state: DeployState, env, arm_policy, arm_runner, base_runner,
     state.clear_runtime_state(arm_policy, arm_runner, base_runner,
                               arm_smoother, base_postproc)
     state.stop_navigation()
+    state.rag_vla_handoff_waiting = False
 
     # 切换模式
     if state.control_mode == 'arm':
@@ -168,7 +213,11 @@ def handle_key_m(state: DeployState, env, arm_runner, arm_smoother,
         print("\n👤 [BASE] Switched to Manual Control")
     elif state.control_mode == 'base' and state.nav_mode_active:
         state.stop_navigation()
+        state.rag_vla_handoff_waiting = False
         print("\n👤 [BASE] Stopped RAG navigation, switched to Manual Control")
+    elif state.control_mode == 'base' and state.rag_vla_handoff_waiting:
+        state.rag_vla_handoff_waiting = False
+        print("\n👤 [BASE] Cancelled RAG->VLA waiting state, switched to Manual Control")
 
 
 # =============================================================================
@@ -190,6 +239,7 @@ def handle_key_z(state: DeployState, env, arm_policy, arm_runner,
                               disable_auto_check=False, reset_runner_state=False)
     state.deactivate_base_auto(base_runner, base_postproc, reset_runner_state=False)
     state.stop_navigation()
+    state.rag_vla_handoff_waiting = False
 
     # 关闭自动检测（手动重置时）
     state.auto_check_enabled = False
@@ -288,7 +338,13 @@ def handle_key_g(state: DeployState, env):
 # T 键：输入自然语言并执行第四阶段检索（仅更新目标，不自动导航）
 # =============================================================================
 
-def handle_key_t(state: DeployState, env, rag_navigator):
+def handle_key_t(
+    state: DeployState,
+    env,
+    rag_navigator,
+    vla_instruction_rag=None,
+    vla_executor: ThreadPoolExecutor | None = None,
+):
     if not env.env.is_key_pressed_once(key=glfw.KEY_T):
         return
 
@@ -327,6 +383,39 @@ def handle_key_t(state: DeployState, env, rag_navigator):
                 f"({float(target_xy[0]):.6f}, {float(target_xy[1]):.6f})"
             )
         print("======================================================")
+        state.rag_vla_query_text = None
+        state.rag_vla_instruction = None
+        state.rag_vla_instruction_meta = {}
+        state.rag_vla_retrieval_error = None
+        state.rag_vla_handoff_waiting = False
+        if vla_instruction_rag is not None:
+            if vla_executor is None:
+                print("【VLA微调指令】未提供后台检索执行器")
+            else:
+                state.rag_vla_request_seq += 1
+                request_id = int(state.rag_vla_request_seq)
+                state.rag_vla_pending_request_id = request_id
+                state.rag_vla_retrieval_pending = True
+                state.rag_vla_pending_future = vla_executor.submit(
+                    _submit_vla_retrieval,
+                    vla_instruction_rag,
+                    request_id,
+                    query,
+                    cluster_caption,
+                    target_caption,
+                )
+                print(
+                    "【VLA微调指令】后台检索已启动 "
+                    f"| weights=query/cluster/target="
+                    f"{vla_instruction_rag.args.query_weight:.2f}/"
+                    f"{vla_instruction_rag.args.cluster_weight:.2f}/"
+                    f"{vla_instruction_rag.args.target_weight:.2f}"
+                )
+        else:
+            state.rag_vla_query_text = None
+            state.rag_vla_instruction = None
+            state.rag_vla_instruction_meta = {}
+            print("【VLA微调指令】未启用 VLA Instruction RAG")
         print("   → Press [R] to start navigation to this retrieved target.")
     except Exception as e:
         print(f"❌ [T] Retrieval failed: {e}")

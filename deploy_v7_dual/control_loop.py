@@ -48,6 +48,7 @@ from .config import (
     BASE_POST_STOP_NUDGE_STALL_SECONDS,
     BASE_POST_STOP_NUDGE_WHEEL_SPEED,
     BASE_POST_STOP_NUDGE_YAW_TOL,
+    RAG_TO_VLA_AUTO_HANDOFF_ENABLED,
 )
 from mujoco_env.visualization import (
     append_step_log,
@@ -697,7 +698,119 @@ def _wrap_to_pi(angle):
     return (float(angle) + np.pi) % (2.0 * np.pi) - np.pi
 
 
-def step_base_nav(state: DeployState, env):
+def _start_base_auto_handoff(
+    state: DeployState,
+    env,
+    base_runner,
+    base_postproc,
+    trace_manager=None,
+    vla_instruction_rag=None,
+):
+    """Start base VLA automatically after RAG coarse navigation finishes."""
+    if not RAG_TO_VLA_AUTO_HANDOFF_ENABLED:
+        print("\nℹ️ [RAG->VLA] Auto handoff disabled in config.")
+        return
+
+    if base_runner is None:
+        print("\n⚠️ [RAG->VLA] BASE policy not loaded, skipping automatic VLA handoff.")
+        return
+
+    query_text = state.rag_query_text or getattr(env, "instruction", "")
+    cluster_caption = str(state.rag_retrieval_meta.get("cluster_caption", "")).strip()
+    target_caption = str(state.rag_retrieval_meta.get("target_caption", "")).strip()
+    vla_instruction = state.rag_vla_instruction
+    vla_meta = dict(state.rag_vla_instruction_meta)
+    if not vla_instruction and state.rag_vla_retrieval_pending:
+        state.rag_vla_handoff_waiting = True
+        print("\n⏳ [RAG->VLA] Waiting for async VLA retrieval to finish.")
+        return
+    if not vla_instruction and vla_instruction_rag is not None and query_text:
+        vla_result = vla_instruction_rag.retrieve_instruction(
+            query=query_text,
+            cluster_caption=cluster_caption,
+            target_caption=target_caption,
+        )
+        vla_instruction = str(vla_result["instruction"])
+        vla_meta = dict(vla_result)
+    if not vla_instruction:
+        print("\n⚠️ [RAG->VLA] No matching VLA instruction found, skipping handoff.")
+        return
+
+    env.set_instruction(given=vla_instruction, task_type='nav')
+    state.last_instruction_by_mode['base'] = vla_instruction
+    state.rag_vla_instruction = vla_instruction
+    state.rag_vla_instruction_meta = vla_meta
+    state.rag_vla_handoff_waiting = False
+    state.auto_mode_base = True
+    state.base_nudge_active = False
+    state.base_nudge_start_time = 0.0
+    state.base_nudge_start_xy = None
+    state.base_nudge_heading_yaw = 0.0
+    state.base_nudge_last_progress_time = 0.0
+    state.base_nudge_last_progress_dist = 0.0
+    if state.base_execution_tracker is not None:
+        state.base_execution_tracker.reset(mode="base_vla", instruction=vla_instruction)
+    base_postproc.reset()
+    base_runner.start()
+    if trace_manager is not None:
+        trace_manager.start_base_episode(env, step=state.step, reason='rag_to_vla_handoff')
+    print(
+        "\n🚗 [RAG->VLA] Handoff complete: "
+        f"query={query_text!r} | instruction={vla_instruction!r}"
+    )
+    if vla_meta:
+        print(
+            f"   group={vla_meta.get('group_name', 'N/A')} "
+            f"| score={float(vla_meta.get('score', 0.0)):.3f}"
+        )
+
+
+def step_base_wait_vla_handoff(
+    state: DeployState,
+    env,
+    base_runner,
+    base_postproc,
+    trace_manager=None,
+    vla_instruction_rag=None,
+):
+    """Hold base at the final RAG pose while async VLA retrieval completes."""
+    if not state.rag_vla_handoff_waiting:
+        return
+
+    if state.rag_vla_instruction is not None:
+        _start_base_auto_handoff(
+            state,
+            env,
+            base_runner,
+            base_postproc,
+            trace_manager=trace_manager,
+            vla_instruction_rag=vla_instruction_rag,
+        )
+        return
+
+    if state.rag_vla_retrieval_pending:
+        env.step(np.array([0.0, 0.0]), mode='base')
+        env.render(teleop=False, idx=state.step)
+        state.step += 1
+        if state.step % 20 == 0:
+            print("[RAG->VLA] Holding final pose while async retrieval is pending.")
+        return
+
+    state.rag_vla_handoff_waiting = False
+    if state.rag_vla_retrieval_error:
+        print(f"\n⚠️ [RAG->VLA] Async retrieval failed, staying in manual mode: {state.rag_vla_retrieval_error}")
+    else:
+        print("\n⚠️ [RAG->VLA] No VLA instruction available after retrieval, staying in manual mode.")
+
+
+def step_base_nav(
+    state: DeployState,
+    env,
+    base_runner,
+    base_postproc,
+    trace_manager=None,
+    vla_instruction_rag=None,
+):
     """BASE RAG 导航步进：跟踪密集 waypoints 并输出左右轮速度。"""
     if not state.nav_mode_active or len(state.nav_waypoints) == 0:
         env.step(np.array([0.0, 0.0]), mode='base')
@@ -732,6 +845,14 @@ def step_base_nav(state: DeployState, env):
         env.render(teleop=False, idx=state.step)
         state.step += 1
         print("\n✅ [RAG] Navigation reached final waypoint.")
+        _start_base_auto_handoff(
+            state,
+            env,
+            base_runner,
+            base_postproc,
+            trace_manager=trace_manager,
+            vla_instruction_rag=vla_instruction_rag,
+        )
         return
 
     # 3) 从当前索引往后找 lookahead 点（限制前瞻窗口，避免跨到远处回环段）
