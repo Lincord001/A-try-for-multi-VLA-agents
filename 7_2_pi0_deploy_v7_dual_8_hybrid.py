@@ -90,14 +90,19 @@ from deploy_v7_dual.config import (
     RAG_RETRIEVE_MAX_RETRY,
     RAG_RETRIEVE_RETRY_WAIT,
     VLA_RAG_CACHE_JSON,
+    VLA_RAG_SELECTION_VLM_MODEL,
     VLA_RAG_TOP_K,
     VLA_RAG_QUERY_WEIGHT,
     VLA_RAG_CLUSTER_WEIGHT,
     VLA_RAG_TARGET_WEIGHT,
+    ARM_RAG_CACHE_JSON,
+    ARM_RAG_TOP_K,
+    ARM_RAG_SELECTION_MODEL,
     EXECUTION_TRACE_ENABLED,
     EXECUTION_TRACE_OUTPUT_DIR,
     EXECUTION_TRACE_FLUSH_EVERY,
     EXECUTION_TRACE_EVALUATE_TRACKER,
+    TASK_SEQUENCE_JSON,
     ARM_VLM_ORCHESTRATION_ENABLED,
     ARM_VLM_CHECK_OUTPUT_DIR,
     ARM_VLM_MODEL,
@@ -119,6 +124,7 @@ from deploy_v7_dual.key_handlers import (
     handle_key_g,
     handle_key_r,
     handle_key_t,
+    handle_key_p,
     process_pending_vla_retrieval,
 )
 from deploy_v7_dual.control_loop import (
@@ -140,6 +146,7 @@ from deploy_v7_dual.ui_prints import (
 )
 from deploy_v7_dual.execution_trace_manager import ExecutionTraceManager
 from deploy_v7_dual.arm_vlm_orchestrator import ArmVLMOrchestrator
+from deploy_v7_dual.task_sequence import advance_task_sequence
 
 from mujoco_env.instruction_utils import (
     INSTRUCTION_GROUPS,
@@ -160,6 +167,7 @@ from mujoco_env.action_utils import BaseActionPostProcessor
 from rag_pipeline.rag_executor import TrajectoryExecutor
 from rag_pipeline.rag_navigator import RAGNavigator, NavigatorArgs
 from rag_pipeline.vla_instruction_rag import VLAInstructionRAG, VLAInstructionRAGArgs
+from rag_pipeline.arm_instruction_rag import ArmInstructionRAG, ArmInstructionRAGArgs
 from mujoco_env.visualization import (
     extract_model_version,
     plot_task_stats,
@@ -367,6 +375,8 @@ def main():
     rag_navigator = None
     vla_instruction_rag = None
     vla_instruction_executor = None
+    arm_instruction_rag = None
+    arm_instruction_executor = None
     try:
         rag_navigator = RAGNavigator(
             NavigatorArgs(
@@ -387,7 +397,7 @@ def main():
             VLAInstructionRAGArgs(
                 instruction_groups=list(INSTRUCTION_GROUPS.get('base', [])),
                 embedding_model=RAG_EMBEDDING_MODEL,
-                selection_model=RAG_MACRO_MODEL,
+                selection_model=VLA_RAG_SELECTION_VLM_MODEL,
                 cache_json=VLA_RAG_CACHE_JSON,
                 top_k=VLA_RAG_TOP_K,
                 query_weight=VLA_RAG_QUERY_WEIGHT,
@@ -404,6 +414,25 @@ def main():
         print(f"🧠 [VLA-RAG] Instruction retriever loaded: {VLA_RAG_CACHE_JSON}")
     except Exception as e:
         print(f"⚠️ [VLA-RAG] Instruction retriever init failed, auto handoff retrieval disabled: {e}")
+    try:
+        arm_instruction_rag = ArmInstructionRAG(
+            ArmInstructionRAGArgs(
+                instruction_groups=list(INSTRUCTION_GROUPS.get('arm', [])),
+                embedding_model=RAG_EMBEDDING_MODEL,
+                selection_model=ARM_RAG_SELECTION_MODEL,
+                cache_json=ARM_RAG_CACHE_JSON,
+                top_k=ARM_RAG_TOP_K,
+                max_retry=RAG_RETRIEVE_MAX_RETRY,
+                retry_wait=RAG_RETRIEVE_RETRY_WAIT,
+            )
+        )
+        arm_instruction_executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="arm_instruction_rag",
+        )
+        print(f"🧠 [ARM-RAG] Instruction retriever loaded: {ARM_RAG_CACHE_JSON}")
+    except Exception as e:
+        print(f"⚠️ [ARM-RAG] Instruction retriever init failed, arm query normalization disabled: {e}")
 
     try:
         while PnPEnv.env.is_viewer_alive():
@@ -433,6 +462,12 @@ def main():
                     rag_navigator,
                     vla_instruction_rag,
                     vla_instruction_executor,
+                    arm_instruction_rag,
+                )
+                handle_key_p(
+                    state,
+                    PnPEnv,
+                    TASK_SEQUENCE_JSON,
                 )
                 handle_key_r(
                     state,
@@ -444,6 +479,26 @@ def main():
                     RAG_DENSE_OUTPUT_JSON,
                     trace_manager,
                 )
+                task_sequence_consumed_step = advance_task_sequence(
+                    state,
+                    PnPEnv,
+                    arm_policy,
+                    arm_runner,
+                    arm_smoother,
+                    base_runner,
+                    base_postproc,
+                    rag_executor,
+                    rag_navigator=rag_navigator,
+                    vla_instruction_rag=vla_instruction_rag,
+                    vla_instruction_executor=vla_instruction_executor,
+                    arm_instruction_rag=arm_instruction_rag,
+                    arm_instruction_executor=arm_instruction_executor,
+                    trace_manager=trace_manager,
+                    arm_orchestrator=arm_orchestrator,
+                    rag_output_json=RAG_DENSE_OUTPUT_JSON,
+                )
+                if task_sequence_consumed_step:
+                    continue
 
                 # --- 控制逻辑 ---
                 if state.control_mode == 'arm':
@@ -559,6 +614,8 @@ def main():
             base_runner.stop()
         if vla_instruction_executor is not None:
             vla_instruction_executor.shutdown(wait=False, cancel_futures=True)
+        if arm_instruction_executor is not None:
+            arm_instruction_executor.shutdown(wait=False, cancel_futures=True)
         if PnPEnv.env.viewer:
             PnPEnv.env.close_viewer()
         print("🛑 Environment closed.")

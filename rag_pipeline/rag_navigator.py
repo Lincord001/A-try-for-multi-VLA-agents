@@ -90,6 +90,7 @@ class RAGNavigator:
     def __init__(self, args: NavigatorArgs):
         self.args = args
         self.input_json = Path(args.input_json).resolve()
+        self.map_base_dir = self.input_json.parent
 
         api_key = os.environ.get("DASHSCOPE_API_KEY")
         if not api_key:
@@ -343,6 +344,14 @@ class RAGNavigator:
             raise RuntimeError(f"目标叶子节点 pose 缺失或格式非法: {pose}")
         return float(pose[0]), float(pose[1])
 
+    def _resolve_panorama_path(self, panorama_path: str | None) -> str | None:
+        if not panorama_path:
+            return None
+        path_obj = Path(str(panorama_path))
+        if path_obj.is_absolute():
+            return str(path_obj.resolve())
+        return str((self.map_base_dir / path_obj).resolve())
+
     def retrieve_top_leaf(self, query: str) -> Dict[str, Any]:
         """对外复用接口：输入文本指令，返回 top-1 叶子节点检索结果。"""
         query = str(query).strip()
@@ -360,6 +369,7 @@ class RAGNavigator:
         top_leaf_id, top_leaf_attr, top_score = self._micro_retrieve_top1(query_embedding, children)
         leaf_caption = str(top_leaf_attr.get("semantic_caption", ""))
         x, y = self._extract_xy_pose(top_leaf_attr)
+        panorama_path = self._resolve_panorama_path(top_leaf_attr.get("panorama_path"))
 
         return {
             "query": query,
@@ -367,6 +377,7 @@ class RAGNavigator:
             "cluster_caption": selected_cluster_caption,
             "target_node": str(top_leaf_id),
             "target_caption": leaf_caption,
+            "target_image_path": panorama_path,
             "score": float(top_score),
             "target_xy": [float(x), float(y)],
         }

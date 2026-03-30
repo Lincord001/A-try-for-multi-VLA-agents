@@ -1,0 +1,21 @@
+{
+  "tasks": [
+    {
+      "name": "base_get_drink",
+      "executor": "base",
+      "query": "我想玩机械臂"
+    },
+    {
+      "name": "arm_place_red_mug",
+      "executor": "arm",
+      "query": "把红色杯子放到盘子上",
+      "reinitialize_arm": true
+
+    },
+    {
+      "name": "base_go_workspace",
+      "executor": "base",
+      "query": "我想喝饮料"
+    }
+  ]
+}

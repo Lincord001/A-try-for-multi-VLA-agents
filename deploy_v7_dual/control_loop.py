@@ -85,6 +85,34 @@ def check_auto_result(
 
     # ---- 自动检测成功 ----
     if env.check_success():
+        if state.task_sequence_active and state.task_sequence_started:
+            if trace_manager is not None:
+                trace_manager.stop_arm_episode(
+                    reason='task_queue_arm_success',
+                    extra={
+                        'step': state.step,
+                        'task_steps': state.step - state.task_start_step,
+                    },
+                )
+            if arm_orchestrator is not None:
+                arm_orchestrator.on_auto_stop('task_queue_arm_success')
+            state.deactivate_arm_auto(
+                arm_runner,
+                arm_smoother,
+                disable_auto_check=True,
+                reset_runner_state=True,
+            )
+            state.begin_task_sequence_arm_return_home(
+                status='success',
+                reason='arm_env_check_success',
+                details={
+                    'step': state.step,
+                    'task_steps': state.step - state.task_start_step,
+                },
+            )
+            print("\n✅ [TASK QUEUE][ARM] Success detected.")
+            return False
+
         if trace_manager is not None:
             trace_manager.stop_arm_episode(
                 reason='task_success',
@@ -154,6 +182,36 @@ def check_auto_result(
 
     # ---- 超时判定 ----
     elif elapsed >= TASK_TIMEOUT_SEC:
+        if state.task_sequence_active and state.task_sequence_started:
+            if trace_manager is not None:
+                trace_manager.stop_arm_episode(
+                    reason='task_queue_arm_timeout',
+                    extra={
+                        'step': state.step,
+                        'task_steps': state.step - state.task_start_step,
+                        'timeout_sec': TASK_TIMEOUT_SEC,
+                    },
+                )
+            if arm_orchestrator is not None:
+                arm_orchestrator.on_auto_stop('task_queue_arm_timeout')
+            state.deactivate_arm_auto(
+                arm_runner,
+                arm_smoother,
+                disable_auto_check=True,
+                reset_runner_state=True,
+            )
+            state.begin_task_sequence_arm_return_home(
+                status='timeout',
+                reason='arm_timeout',
+                details={
+                    'step': state.step,
+                    'task_steps': state.step - state.task_start_step,
+                    'timeout_sec': TASK_TIMEOUT_SEC,
+                },
+            )
+            print(f"\n⏱️ [TASK QUEUE][ARM] Timeout after {TASK_TIMEOUT_SEC}s.")
+            return False
+
         if trace_manager is not None:
             trace_manager.stop_arm_episode(
                 reason='task_timeout',
@@ -398,6 +456,22 @@ def handle_arm_orchestrator_event(
     if status == 'verification_unavailable':
         state.arm_vlm_pause_active = False
         print(f"\n⚠️ [ARM-VLM] Verification unavailable after pause: {reason}")
+        if state.task_sequence_active and state.task_sequence_started:
+            if trace_manager is not None:
+                trace_manager.stop_arm_episode(reason='task_queue_vlm_verification_unavailable')
+            if arm_orchestrator is not None:
+                arm_orchestrator.on_auto_stop('task_queue_vlm_verification_unavailable')
+            state.deactivate_arm_auto(
+                arm_runner,
+                arm_smoother,
+                disable_auto_check=True,
+                reset_runner_state=True,
+            )
+            state.begin_task_sequence_arm_return_home(
+                status='failed',
+                reason='vlm_verification_unavailable',
+            )
+            return False
         if trace_manager is not None:
             trace_manager.stop_arm_episode(reason='vlm_verification_unavailable')
         if arm_orchestrator is not None:
@@ -418,6 +492,22 @@ def handle_arm_orchestrator_event(
         print(f"\n✅ [ARM-VLM] Success verified: {reason}")
         if rationale:
             print(f"   VLM: {rationale}")
+        if state.task_sequence_active and state.task_sequence_started:
+            if trace_manager is not None:
+                trace_manager.stop_arm_episode(reason='task_queue_vlm_verified_success')
+            if arm_orchestrator is not None:
+                arm_orchestrator.on_auto_stop('task_queue_vlm_verified_success')
+            state.deactivate_arm_auto(
+                arm_runner,
+                arm_smoother,
+                disable_auto_check=True,
+                reset_runner_state=True,
+            )
+            state.begin_task_sequence_arm_return_home(
+                status='success',
+                reason='vlm_verified_success',
+            )
+            return False
         if not state.auto_check_enabled:
             if trace_manager is not None:
                 trace_manager.stop_arm_episode(reason='vlm_verified_success')
@@ -440,6 +530,22 @@ def handle_arm_orchestrator_event(
         print(f"\n❌ [ARM-VLM] Irrecoverable failure: {reason}")
         if rationale:
             print(f"   VLM: {rationale}")
+        if state.task_sequence_active and state.task_sequence_started:
+            if trace_manager is not None:
+                trace_manager.stop_arm_episode(reason='task_queue_vlm_verified_failure')
+            if arm_orchestrator is not None:
+                arm_orchestrator.on_auto_stop('task_queue_vlm_verified_failure')
+            state.deactivate_arm_auto(
+                arm_runner,
+                arm_smoother,
+                disable_auto_check=True,
+                reset_runner_state=True,
+            )
+            state.begin_task_sequence_arm_return_home(
+                status='failed',
+                reason='vlm_verified_failure',
+            )
+            return False
         if not state.auto_check_enabled:
             if trace_manager is not None:
                 trace_manager.stop_arm_episode(reason='vlm_verified_failure')
@@ -612,6 +718,11 @@ def step_base_auto(state: DeployState, env, base_runner, base_postproc, trace_ma
                 },
             )
         print(f"\n🚗 [BASE] Auto control stopped by tracker: {tracker_result.reason}")
+        if state.task_sequence_active and state.task_sequence_started:
+            state.mark_task_sequence_result(
+                status='completed',
+                reason=f"base_tracker_{tracker_result.reason}",
+            )
 
     if state.base_nudge_active and state.base_nudge_start_xy is not None:
         p_tb3_now, R_tb3_now = env.env.get_pR_body('tb3_base')
@@ -656,6 +767,11 @@ def step_base_auto(state: DeployState, env, base_runner, base_postproc, trace_ma
                 "\n🚗 [BASE] Post-stop nudge finished: "
                 f"reason={stop_reason} elapsed={elapsed:.2f}s progress={forward_progress:.3f}m"
             )
+            if state.task_sequence_active and state.task_sequence_started:
+                state.mark_task_sequence_result(
+                    status='completed',
+                    reason=f"base_post_stop_nudge_{stop_reason}",
+                )
 
     # 5. 渲染 & 步数
     env.render(teleop=False, idx=state.step)
@@ -709,32 +825,35 @@ def _start_base_auto_handoff(
     """Start base VLA automatically after RAG coarse navigation finishes."""
     if not RAG_TO_VLA_AUTO_HANDOFF_ENABLED:
         print("\nℹ️ [RAG->VLA] Auto handoff disabled in config.")
-        return
+        return {"status": "skipped", "reason": "auto_handoff_disabled"}
 
     if base_runner is None:
         print("\n⚠️ [RAG->VLA] BASE policy not loaded, skipping automatic VLA handoff.")
-        return
+        return {"status": "skipped", "reason": "base_policy_unavailable"}
 
     query_text = state.rag_query_text or getattr(env, "instruction", "")
     cluster_caption = str(state.rag_retrieval_meta.get("cluster_caption", "")).strip()
     target_caption = str(state.rag_retrieval_meta.get("target_caption", "")).strip()
+    target_image_path = state.rag_retrieval_meta.get("target_image_path")
     vla_instruction = state.rag_vla_instruction
     vla_meta = dict(state.rag_vla_instruction_meta)
     if not vla_instruction and state.rag_vla_retrieval_pending:
         state.rag_vla_handoff_waiting = True
         print("\n⏳ [RAG->VLA] Waiting for async VLA retrieval to finish.")
-        return
+        return {"status": "waiting", "reason": "pending_async_vla_retrieval"}
     if not vla_instruction and vla_instruction_rag is not None and query_text:
         vla_result = vla_instruction_rag.retrieve_instruction(
             query=query_text,
             cluster_caption=cluster_caption,
             target_caption=target_caption,
+            target_image_path=target_image_path,
         )
-        vla_instruction = str(vla_result["instruction"])
         vla_meta = dict(vla_result)
+        if vla_result.get("matched", True) and vla_result.get("instruction"):
+            vla_instruction = str(vla_result["instruction"])
     if not vla_instruction:
         print("\n⚠️ [RAG->VLA] No matching VLA instruction found, skipping handoff.")
-        return
+        return {"status": "skipped", "reason": "no_matching_vla_instruction"}
 
     env.set_instruction(given=vla_instruction, task_type='nav')
     state.last_instruction_by_mode['base'] = vla_instruction
@@ -763,6 +882,7 @@ def _start_base_auto_handoff(
             f"   group={vla_meta.get('group_name', 'N/A')} "
             f"| score={float(vla_meta.get('score', 0.0)):.3f}"
         )
+    return {"status": "started", "reason": "rag_to_vla_handoff_started"}
 
 
 def step_base_wait_vla_handoff(
@@ -778,7 +898,7 @@ def step_base_wait_vla_handoff(
         return
 
     if state.rag_vla_instruction is not None:
-        _start_base_auto_handoff(
+        handoff_result = _start_base_auto_handoff(
             state,
             env,
             base_runner,
@@ -786,6 +906,16 @@ def step_base_wait_vla_handoff(
             trace_manager=trace_manager,
             vla_instruction_rag=vla_instruction_rag,
         )
+        if (
+            handoff_result
+            and handoff_result.get("status") == "skipped"
+            and state.task_sequence_active
+            and state.task_sequence_started
+        ):
+            state.mark_task_sequence_result(
+                status='completed',
+                reason=f"base_rag_complete_{handoff_result.get('reason')}",
+            )
         return
 
     if state.rag_vla_retrieval_pending:
@@ -799,8 +929,18 @@ def step_base_wait_vla_handoff(
     state.rag_vla_handoff_waiting = False
     if state.rag_vla_retrieval_error:
         print(f"\n⚠️ [RAG->VLA] Async retrieval failed, staying in manual mode: {state.rag_vla_retrieval_error}")
+        if state.task_sequence_active and state.task_sequence_started:
+            state.mark_task_sequence_result(
+                status='completed',
+                reason='base_rag_complete_vla_retrieval_failed',
+            )
     else:
         print("\n⚠️ [RAG->VLA] No VLA instruction available after retrieval, staying in manual mode.")
+        if state.task_sequence_active and state.task_sequence_started:
+            state.mark_task_sequence_result(
+                status='completed',
+                reason='base_rag_complete_no_vla_instruction',
+            )
 
 
 def step_base_nav(
@@ -845,7 +985,7 @@ def step_base_nav(
         env.render(teleop=False, idx=state.step)
         state.step += 1
         print("\n✅ [RAG] Navigation reached final waypoint.")
-        _start_base_auto_handoff(
+        handoff_result = _start_base_auto_handoff(
             state,
             env,
             base_runner,
@@ -853,6 +993,16 @@ def step_base_nav(
             trace_manager=trace_manager,
             vla_instruction_rag=vla_instruction_rag,
         )
+        if (
+            handoff_result
+            and handoff_result.get("status") == "skipped"
+            and state.task_sequence_active
+            and state.task_sequence_started
+        ):
+            state.mark_task_sequence_result(
+                status='completed',
+                reason=f"base_rag_complete_{handoff_result.get('reason')}",
+            )
         return
 
     # 3) 从当前索引往后找 lookahead 点（限制前瞻窗口，避免跨到远处回环段）

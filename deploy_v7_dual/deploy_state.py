@@ -105,6 +105,20 @@ class DeployState:
     rag_vla_retrieval_error: Optional[str] = None
     rag_vla_handoff_waiting: bool = False
 
+    # ---------- 串行任务队列 ----------
+    task_sequence_active: bool = False
+    task_sequence_tasks: list = dataclasses.field(default_factory=list)
+    task_sequence_index: int = 0
+    task_sequence_started: bool = False
+    task_sequence_pending_result: Optional[dict] = None
+    task_sequence_results: list = dataclasses.field(default_factory=list)
+    task_sequence_source_path: Optional[str] = None
+    task_sequence_prefetch_started: bool = False
+    task_sequence_arm_query_futures: dict = dataclasses.field(default_factory=dict)
+    task_sequence_arm_query_results: dict = dataclasses.field(default_factory=dict)
+    task_sequence_arm_return_home_active: bool = False
+    task_sequence_arm_post_home_result: Optional[dict] = None
+
     # ---------- 自动重置选项（从 config 读取，主程序初始化后传入） ----------
     auto_reset_options: dict = dataclasses.field(default_factory=lambda: {
         "random_init_enabled": RANDOM_INIT_ENABLED,
@@ -223,3 +237,67 @@ class DeployState:
         self.rag_vla_retrieval_pending = False
         self.rag_vla_retrieval_error = None
         self.rag_vla_handoff_waiting = False
+
+    def start_task_sequence(self, tasks, source_path: str):
+        """启动串行任务队列。"""
+        self.task_sequence_active = True
+        self.task_sequence_tasks = [dict(task) for task in tasks]
+        self.task_sequence_index = 0
+        self.task_sequence_started = False
+        self.task_sequence_pending_result = None
+        self.task_sequence_results = []
+        self.task_sequence_source_path = str(source_path)
+        self.task_sequence_prefetch_started = False
+        self.task_sequence_arm_query_futures = {}
+        self.task_sequence_arm_query_results = {}
+        self.task_sequence_arm_return_home_active = False
+        self.task_sequence_arm_post_home_result = None
+
+    def stop_task_sequence(self, reason: str):
+        """停止串行任务队列。"""
+        if self.task_sequence_active:
+            print(f"\n⏹️ [TASK QUEUE] Stopped: {reason}")
+        self.task_sequence_active = False
+        self.task_sequence_tasks = []
+        self.task_sequence_index = 0
+        self.task_sequence_started = False
+        self.task_sequence_pending_result = None
+        self.task_sequence_source_path = None
+        self.task_sequence_prefetch_started = False
+        self.task_sequence_arm_query_futures = {}
+        self.task_sequence_arm_query_results = {}
+        self.task_sequence_arm_return_home_active = False
+        self.task_sequence_arm_post_home_result = None
+
+    def current_task_sequence_task(self):
+        """返回当前串行任务；若越界则返回 None。"""
+        if not self.task_sequence_active:
+            return None
+        if self.task_sequence_index < 0 or self.task_sequence_index >= len(self.task_sequence_tasks):
+            return None
+        return self.task_sequence_tasks[self.task_sequence_index]
+
+    def mark_task_sequence_result(self, status: str, reason: str, details: Optional[dict] = None):
+        """记录当前串行任务已完成，等待调度器推进到下一项。"""
+        if not self.task_sequence_active or not self.task_sequence_started:
+            return
+        payload = {
+            "status": str(status),
+            "reason": str(reason),
+        }
+        if details:
+            payload.update(dict(details))
+        self.task_sequence_pending_result = payload
+
+    def begin_task_sequence_arm_return_home(self, status: str, reason: str, details: Optional[dict] = None):
+        """对于队列中的 ARM 任务，先回正，再提交任务完成结果。"""
+        if not self.task_sequence_active or not self.task_sequence_started:
+            return
+        payload = {
+            "status": str(status),
+            "reason": str(reason),
+        }
+        if details:
+            payload.update(dict(details))
+        self.task_sequence_arm_return_home_active = True
+        self.task_sequence_arm_post_home_result = payload

@@ -19,13 +19,15 @@ from mujoco_env.instruction_utils import (
 
 from .deploy_state import DeployState
 from .config import ARM_SYNC_INFERENCE
+from .task_sequence import start_task_sequence_from_file
 
 
-def _submit_vla_retrieval(vla_instruction_rag, request_id, query, cluster_caption, target_caption):
+def _submit_vla_retrieval(vla_instruction_rag, request_id, query, cluster_caption, target_caption, target_image_path):
     result = vla_instruction_rag.retrieve_instruction(
         query=query,
         cluster_caption=cluster_caption,
         target_caption=target_caption,
+        target_image_path=target_image_path,
     )
     result["request_id"] = int(request_id)
     return result
@@ -54,13 +56,22 @@ def process_pending_vla_retrieval(state: DeployState):
     if int(vla_result.get("request_id", -1)) != request_id:
         return
 
-    state.rag_vla_instruction = str(vla_result["instruction"])
     state.rag_vla_instruction_meta = dict(vla_result)
     state.rag_vla_retrieval_error = None
+    if not vla_result.get("matched", True) or not vla_result.get("instruction"):
+        state.rag_vla_instruction = None
+        print("\n⚠️ [VLA-RAG] Async retrieval finished: no matching VLA instruction.")
+        if vla_result.get("llm_reason"):
+            print(f"   LLM reason: {vla_result['llm_reason']}")
+        return
+
+    state.rag_vla_instruction = str(vla_result["instruction"])
     print(
         f"\n🧠 [VLA-RAG] Async retrieval ready: {state.rag_vla_instruction} "
         f"| group={vla_result['group_name']} | score={vla_result['score']:.6f}"
     )
+    if vla_result.get("llm_reason"):
+        print(f"   LLM reason: {vla_result['llm_reason']}")
 
 
 # =============================================================================
@@ -71,6 +82,8 @@ def handle_key_c(state: DeployState, env, arm_policy, arm_runner, base_runner,
                  arm_smoother, base_postproc, trace_manager=None, arm_orchestrator=None):
     if not env.env.is_key_pressed_once(key=glfw.KEY_C):
         return
+
+    state.stop_task_sequence("manual_key_c_mode_switch")
 
     # 停止当前运行的推理
     if state.control_mode == 'arm':
@@ -198,6 +211,8 @@ def handle_key_m(state: DeployState, env, arm_runner, arm_smoother,
     if not env.env.is_key_pressed_once(key=glfw.KEY_M):
         return
 
+    state.stop_task_sequence("manual_key_m_stop")
+
     if state.control_mode == 'arm' and state.auto_mode_arm:
         if trace_manager is not None:
             trace_manager.stop_arm_episode(reason='manual_key_m_stop')
@@ -228,6 +243,8 @@ def handle_key_z(state: DeployState, env, arm_policy, arm_runner,
                  base_runner, arm_smoother, base_postproc, trace_manager=None, arm_orchestrator=None):
     if not env.env.is_key_pressed_once(key=glfw.KEY_Z):
         return
+
+    state.stop_task_sequence("manual_key_z_reset")
 
     # 停止自动控制
     if trace_manager is not None:
@@ -344,12 +361,40 @@ def handle_key_t(
     rag_navigator,
     vla_instruction_rag=None,
     vla_executor: ThreadPoolExecutor | None = None,
+    arm_instruction_rag=None,
 ):
     if not env.env.is_key_pressed_once(key=glfw.KEY_T):
         return
 
-    if state.control_mode != 'base':
-        print("\n⚠️ [T] Retrieval only available in BASE mode. Press [C] to switch.")
+    if state.control_mode == 'arm':
+        if arm_instruction_rag is None:
+            print("\n⚠️ [T] ARM instruction retriever unavailable.")
+            return
+
+        print("\n📝 [T] Enter your natural-language arm task query:")
+        query_text = input("   > ").strip()
+        if not query_text:
+            print("⚠️ [T] Empty query ignored.")
+            return
+
+        try:
+            result = arm_instruction_rag.retrieve_instruction(query_text)
+            print("\n================ ARM Instruction RAG 报告 ================")
+            print(f"【用户指令】{query_text}")
+            if result.get("matched", True) and result.get("instruction"):
+                instruction = str(result["instruction"])
+                env.set_instruction(given=instruction, task_type='arm')
+                state.last_instruction_by_mode['arm'] = instruction
+                print(f"【标准化指令】{instruction}")
+                print(f"【所属分组】{result.get('group_name', 'N/A')}")
+                print(f"【检索分数】{float(result.get('score', 0.0)):.6f}")
+            else:
+                print("【标准化指令】NO_MATCH")
+            if result.get("llm_reason"):
+                print(f"【LLM理由】{result['llm_reason']}")
+            print("=========================================================")
+        except Exception as e:
+            print(f"❌ [T] ARM retrieval failed: {e}")
         return
 
     if rag_navigator is None:
@@ -370,6 +415,7 @@ def handle_key_t(
         cluster_caption = str(result.get("cluster_caption", ""))
         target_node = str(result.get("target_node", "N/A"))
         target_caption = str(result.get("target_caption", ""))
+        target_image_path = result.get("target_image_path")
         score = float(result.get("score", 0.0))
         target_xy = result.get("target_xy")
 
@@ -403,6 +449,7 @@ def handle_key_t(
                     query,
                     cluster_caption,
                     target_caption,
+                    target_image_path,
                 )
                 print(
                     "【VLA微调指令】后台检索已启动 "
@@ -419,6 +466,25 @@ def handle_key_t(
         print("   → Press [R] to start navigation to this retrieved target.")
     except Exception as e:
         print(f"❌ [T] Retrieval failed: {e}")
+
+
+# =============================================================================
+# P 键：加载并启动 JSON 串行任务队列
+# =============================================================================
+
+def handle_key_p(state: DeployState, env, task_sequence_json: str):
+    if not env.env.is_key_pressed_once(key=glfw.KEY_P):
+        return
+
+    if state.task_sequence_active:
+        state.stop_task_sequence("manual_key_p_toggle_stop")
+        return
+
+    try:
+        start_task_sequence_from_file(state, task_sequence_json)
+        print("   → The queue will begin automatically on the next control tick.")
+    except Exception as exc:
+        print(f"\n❌ [P] Failed to load task queue: {exc}")
 
 
 # =============================================================================

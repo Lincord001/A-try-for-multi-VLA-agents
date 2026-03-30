@@ -15,6 +15,7 @@ EXECUTION_TRACE_ENABLED = True
 EXECUTION_TRACE_OUTPUT_DIR = "./execution_tracker_traces"
 EXECUTION_TRACE_FLUSH_EVERY = 1
 EXECUTION_TRACE_EVALUATE_TRACKER = False
+TASK_SEQUENCE_JSON = "./deploy_v7_dual/task_sequence.json"
 ARM_VLM_ORCHESTRATION_ENABLED = True
 ARM_VLM_CHECK_OUTPUT_DIR = "./vlm_verifier_checks"
 ARM_VLM_MODEL = "qwen3.5-plus-2026-02-15"
@@ -113,8 +114,8 @@ GRIPPER_CLOSE_THRESH = 0.25
 # ==========================================
 # 🔧 模型加载选择
 # ==========================================
-LOAD_ARM_MODEL = False
-LOAD_BASE_MODEL = True 
+LOAD_ARM_MODEL = True
+LOAD_BASE_MODEL = True
 
 # ==========================================
 # 🔧 Arm 模式难度选择
@@ -162,7 +163,11 @@ RAG_RETRIEVE_MAX_RETRY = 3
 RAG_RETRIEVE_RETRY_WAIT = 1.5
 RAG_TO_VLA_AUTO_HANDOFF_ENABLED = True
 VLA_RAG_CACHE_JSON = "./topology_output/base_vla_instruction_embeddings.json"
+VLA_RAG_SELECTION_VLM_MODEL = "qwen3.5-plus-2026-02-15"
 VLA_RAG_TOP_K = 3
 VLA_RAG_QUERY_WEIGHT = 0.2
 VLA_RAG_CLUSTER_WEIGHT = 0.5
 VLA_RAG_TARGET_WEIGHT = 0.3
+ARM_RAG_CACHE_JSON = "./topology_output/arm_instruction_embeddings.json"
+ARM_RAG_TOP_K = 3
+ARM_RAG_SELECTION_MODEL = "qwen-max"

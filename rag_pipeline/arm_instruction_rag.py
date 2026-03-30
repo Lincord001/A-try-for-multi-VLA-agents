@@ -12,45 +12,20 @@ import dashscope
 import numpy as np
 
 
-LOGGER = logging.getLogger("vla_instruction_rag")
+LOGGER = logging.getLogger("arm_instruction_rag")
 
 SELECT_PROMPT_TEMPLATE = (
-    "你是一个移动机器人目标语义匹配助手。\n"
-    "已知信息如下：\n"
-    "- 用户原始任务：'{query}'\n"
-    "- RAG 宏观区域摘要：'{cluster_caption}'\n"
-    "- RAG 微观目标点描述：'{target_caption}'\n"
-    "下面是已经通过向量召回得到的候选 VLA 控制指令。\n"
-    "你的任务不是规划路径，也不是改写任务，而是判断这些候选指令中，"
-    "是否存在一条在语义上明确匹配当前目标区域/目标点、可以在机器人已经到达该目标附近后使用的局部控制指令。\n"
+    "你是一个机械臂任务指令标准化助手。\n"
+    "用户给出的高层任务是：'{query}'。\n"
+    "下面是系统中可用的候选标准机械臂控制指令。\n"
+    "你的任务不是改写任务，而是判断哪一条候选标准指令在语义上最匹配用户意图。\n"
     "判定规则：\n"
-    "1. 只有当候选指令与当前目标区域和目标点语义明确匹配时，才能选择它。\n"
-    "2. 如果候选指令描述的是别的区域、别的目标，或者语义上不够确定，就不能选。\n"
-    "3. 如果没有任何候选满足要求，回复 NO_MATCH。\n"
+    "1. 优先匹配目标物体、颜色、起点位置、终点位置和动作关系。\n"
+    "2. 如果用户语义无法明确对应到某个候选，例如颜色不清楚、起终点关系不清楚，回复 NO_MATCH。\n"
+    "3. 不要凭空创造新指令，只能在候选中选，或回复 NO_MATCH。\n"
     "请严格按下面格式回复，两行都必须有：\n"
     "DECISION: CANDIDATE_2\n"
-    "REASON: 用一句话说明为什么它匹配当前目标；如果没有合适候选，就写为什么是 NO_MATCH。\n"
-    "其中 DECISION 必须是某个候选编号，或 NO_MATCH。\n"
-    "候选列表如下：\n"
-    "{candidate_lines}\n"
-)
-
-SELECT_VLM_PROMPT_TEMPLATE = (
-    "你是一个移动机器人目标图像匹配助手。\n"
-    "用户当前高层任务是：'{query}'。\n"
-    "你将看到一张 RAG 检索得到的目标节点图像。"
-    "这不是单视角照片，而是一张由机器人左、前、右三个视角水平拼接而成的全景图。\n"
-    "请综合整张拼接图判断环境语义，不要把拼接缝隙当成真实结构，也不要只根据某一个局部视角中的显眼物体就下结论。\n"
-    "你的任务不是规划路径，也不是复述画面，而是判断下面这些候选 VLA 控制指令中，"
-    "是否存在一条在语义上明确匹配这张目标图像所对应区域/目标物的局部控制指令。\n"
-    "判定规则：\n"
-    "1. 以图像中真实可见的目标区域、目标物和场景语义为主进行判断，同时必须参考用户高层任务。\n"
-    "2. 允许候选指令与图像中的目标不是字面同名，但如果它们明显指向同一物体、同一区域或同一功能位置，可以判为匹配。\n"
-    "3. 如果候选指令虽然能解释图像中的某个显眼物体，但明显不符合用户高层任务，就不能选。\n"
-    "4. 如果图像信息不足，或所有候选都与图像语义及用户任务都不明确匹配，就回复 NO_MATCH。\n"
-    "请严格按下面格式回复，两行都必须有：\n"
-    "DECISION: CANDIDATE_2\n"
-    "REASON: 用一句话说明为什么它匹配当前图像目标；如果没有合适候选，就写为什么是 NO_MATCH。\n"
+    "REASON: 用一句话说明为什么它匹配；如果没有合适候选，就写为什么是 NO_MATCH。\n"
     "其中 DECISION 必须是某个候选编号，或 NO_MATCH。\n"
     "候选列表如下：\n"
     "{candidate_lines}\n"
@@ -58,23 +33,20 @@ SELECT_VLM_PROMPT_TEMPLATE = (
 
 
 @dataclass
-class VLAInstructionRAGArgs:
+class ArmInstructionRAGArgs:
     instruction_groups: List[Dict[str, Any]]
     embedding_model: str
     selection_model: str
     cache_json: str
     top_k: int
-    query_weight: float
-    cluster_weight: float
-    target_weight: float
     max_retry: int
     retry_wait: float
 
 
-class VLAInstructionRAG:
-    """Embedding + LLM-selection RAG for base VLA instruction retrieval."""
+class ArmInstructionRAG:
+    """Text retrieval + semantic normalization for arm instructions."""
 
-    def __init__(self, args: VLAInstructionRAGArgs):
+    def __init__(self, args: ArmInstructionRAGArgs):
         self.args = args
         api_key = os.environ.get("DASHSCOPE_API_KEY")
         if not api_key:
@@ -84,7 +56,7 @@ class VLAInstructionRAG:
         self.cache_path = Path(args.cache_json).resolve()
         self.entries = self._flatten_instruction_groups(args.instruction_groups)
         if not self.entries:
-            raise ValueError("instruction_groups 中没有可用的 VLA 指令。")
+            raise ValueError("instruction_groups 中没有可用的 ARM 指令。")
         self._ensure_entry_embeddings()
 
     @staticmethod
@@ -92,19 +64,19 @@ class VLAInstructionRAG:
         if payload is None or isinstance(payload, (str, int, float, bool)):
             return payload
         if isinstance(payload, dict):
-            return {k: VLAInstructionRAG._to_plain_data(v) for k, v in payload.items()}
+            return {k: ArmInstructionRAG._to_plain_data(v) for k, v in payload.items()}
         if isinstance(payload, (list, tuple)):
-            return [VLAInstructionRAG._to_plain_data(v) for v in payload]
+            return [ArmInstructionRAG._to_plain_data(v) for v in payload]
         for attr_name in ("model_dump", "to_dict"):
             method = getattr(payload, attr_name, None)
             if callable(method):
                 try:
-                    return VLAInstructionRAG._to_plain_data(method())
+                    return ArmInstructionRAG._to_plain_data(method())
                 except Exception:
                     pass
         obj_dict = getattr(payload, "__dict__", None)
         if isinstance(obj_dict, dict) and obj_dict:
-            return {k: VLAInstructionRAG._to_plain_data(v) for k, v in obj_dict.items() if not k.startswith("_")}
+            return {k: ArmInstructionRAG._to_plain_data(v) for k, v in obj_dict.items() if not k.startswith("_")}
         return payload
 
     @staticmethod
@@ -175,15 +147,13 @@ class VLAInstructionRAG:
             vector = first_item.get("embedding")
         if not isinstance(vector, list) or not vector:
             raise RuntimeError(f"DashScope TextEmbedding 响应缺少 embedding 向量: {response}")
-        if not all(isinstance(x, (int, float)) for x in vector):
-            raise RuntimeError(f"DashScope TextEmbedding 向量元素类型非法: {response}")
         return np.asarray(vector, dtype=np.float64)
 
     @staticmethod
     def _flatten_instruction_groups(instruction_groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         entries: List[Dict[str, Any]] = []
         for group_idx, group in enumerate(instruction_groups):
-            group_name = str(group.get("name", f"base_group_{group_idx + 1}"))
+            group_name = str(group.get("name", f"arm_group_{group_idx + 1}"))
             for inst_idx, instruction in enumerate(group.get("instructions", [])):
                 text = str(instruction).strip()
                 if not text:
@@ -219,7 +189,7 @@ class VLAInstructionRAG:
         with self.cache_path.open("r", encoding="utf-8") as f:
             payload = json.load(f)
         if payload.get("fingerprint") != self._fingerprint():
-            LOGGER.info("VLA instruction embedding cache fingerprint mismatch, rebuilding.")
+            LOGGER.info("ARM instruction embedding cache fingerprint mismatch, rebuilding.")
             return None
         return payload
 
@@ -233,7 +203,7 @@ class VLAInstructionRAG:
         for attempt in range(1, self.args.max_retry + 1):
             try:
                 LOGGER.info(
-                    "生成 VLA 指令向量: attempt=%d/%d model=%s",
+                    "生成 ARM 指令向量: attempt=%d/%d model=%s",
                     attempt,
                     self.args.max_retry,
                     self.args.embedding_model,
@@ -242,12 +212,12 @@ class VLAInstructionRAG:
                 return self._extract_text_embedding(response)
             except Exception as exc:
                 last_error = exc
-                LOGGER.warning("VLA 指令向量化失败: attempt=%d err=%s", attempt, exc)
+                LOGGER.warning("ARM 指令向量化失败: attempt=%d err=%s", attempt, exc)
                 if attempt < self.args.max_retry:
                     time.sleep(self.args.retry_wait)
         if last_error is not None:
             raise last_error
-        raise RuntimeError("VLA 指令向量化失败，且未捕获到具体异常。")
+        raise RuntimeError("ARM 指令向量化失败，且未捕获到具体异常。")
 
     def _ensure_entry_embeddings(self) -> None:
         cache_payload = self._load_cache()
@@ -265,10 +235,10 @@ class VLAInstructionRAG:
                     break
                 entry["embedding"] = np.asarray(cached["embedding"], dtype=np.float64)
             if complete:
-                LOGGER.info("Loaded VLA instruction embedding cache: %s", self.cache_path)
+                LOGGER.info("Loaded ARM instruction embedding cache: %s", self.cache_path)
                 return
 
-        LOGGER.info("Building VLA instruction embedding cache: entries=%d", len(self.entries))
+        LOGGER.info("Building ARM instruction embedding cache: entries=%d", len(self.entries))
         for entry in self.entries:
             entry["embedding"] = self._generate_text_embedding(entry["instruction"])
         self._save_cache(
@@ -295,99 +265,36 @@ class VLAInstructionRAG:
             return -1.0
         return float(np.dot(a, b) / denominator)
 
-    def _retrieve_top_k_multi(
-        self,
-        query_embedding: np.ndarray | None,
-        cluster_embedding: np.ndarray | None,
-        target_embedding: np.ndarray | None,
-    ) -> List[Dict[str, Any]]:
+    def _retrieve_top_k(self, query_embedding: np.ndarray) -> List[Dict[str, Any]]:
         scored: List[Dict[str, Any]] = []
         for entry in self.entries:
             embedding = entry.get("embedding")
             if not isinstance(embedding, np.ndarray):
                 continue
-            component_scores: Dict[str, float] = {}
-            total_score = 0.0
-            total_weight = 0.0
-
-            def _accumulate(name: str, vec: np.ndarray | None, weight: float) -> None:
-                nonlocal total_score, total_weight
-                if vec is None or weight <= 1e-12:
-                    return
-                if embedding.shape != vec.shape:
-                    LOGGER.warning(
-                        "Skip %s score due to embedding dim mismatch: entry=%s entry_dim=%s query_dim=%s",
-                        name,
-                        entry["entry_id"],
-                        embedding.shape,
-                        vec.shape,
-                    )
-                    return
-                sim = self._cosine_similarity(vec, embedding)
-                component_scores[name] = float(sim)
-                total_score += float(weight) * float(sim)
-                total_weight += float(weight)
-
-            _accumulate("query", query_embedding, self.args.query_weight)
-            _accumulate("cluster", cluster_embedding, self.args.cluster_weight)
-            _accumulate("target", target_embedding, self.args.target_weight)
-            if total_weight <= 1e-12:
+            if embedding.shape != query_embedding.shape:
                 continue
-
             candidate = dict(entry)
-            candidate["score"] = float(total_score / total_weight)
-            candidate["component_scores"] = component_scores
+            candidate["score"] = self._cosine_similarity(query_embedding, embedding)
             candidate.pop("embedding", None)
             scored.append(candidate)
         if not scored:
-            raise RuntimeError("VLA instruction retrieval failed: no candidate has a usable embedding.")
+            raise RuntimeError("ARM instruction retrieval failed: no candidate has a usable embedding.")
         scored.sort(key=lambda item: item["score"], reverse=True)
         return scored[: max(1, int(self.args.top_k))]
 
-    def _build_selection_prompt(
-        self,
-        query: str,
-        cluster_caption: str,
-        target_caption: str,
-        candidates: List[Dict[str, Any]],
-    ) -> str:
+    def _build_selection_prompt(self, query: str, candidates: List[Dict[str, Any]]) -> str:
         lines = []
         for idx, candidate in enumerate(candidates, start=1):
             lines.append(f"[CANDIDATE_{idx}] {candidate['instruction']}")
-        return SELECT_PROMPT_TEMPLATE.format(
-            query=query,
-            cluster_caption=cluster_caption,
-            target_caption=target_caption,
-            candidate_lines="\n".join(lines),
-        )
+        return SELECT_PROMPT_TEMPLATE.format(query=query, candidate_lines="\n".join(lines))
 
-    def _build_selection_vlm_prompt(self, query: str, candidates: List[Dict[str, Any]]) -> str:
-        lines = []
-        for idx, candidate in enumerate(candidates, start=1):
-            lines.append(f"[CANDIDATE_{idx}] {candidate['instruction']}")
-        return SELECT_VLM_PROMPT_TEMPLATE.format(
-            query=query,
-            candidate_lines="\n".join(lines),
-        )
-
-    def _call_selection_llm(
-        self,
-        query: str,
-        cluster_caption: str,
-        target_caption: str,
-        candidates: List[Dict[str, Any]],
-    ) -> str:
-        prompt = self._build_selection_prompt(
-            query=query,
-            cluster_caption=cluster_caption,
-            target_caption=target_caption,
-            candidates=candidates,
-        )
+    def _call_selection_llm(self, query: str, candidates: List[Dict[str, Any]]) -> str:
+        prompt = self._build_selection_prompt(query, candidates)
         last_error: Exception | None = None
         for attempt in range(1, self.args.max_retry + 1):
             try:
                 LOGGER.info(
-                    "VLA 指令候选重排调用 LLM: attempt=%d/%d model=%s",
+                    "ARM 指令标准化调用 LLM: attempt=%d/%d model=%s",
                     attempt,
                     self.args.max_retry,
                     self.args.selection_model,
@@ -395,63 +302,19 @@ class VLAInstructionRAG:
                 response = dashscope.Generation.call(
                     model=self.args.selection_model,
                     messages=[
-                        {"role": "system", "content": "你是具身移动机器人控制指令检索助手。"},
+                        {"role": "system", "content": "你是机械臂任务指令标准化助手。"},
                         {"role": "user", "content": prompt},
                     ],
                 )
                 return self._extract_generation_text(response)
             except Exception as exc:
                 last_error = exc
-                LOGGER.warning("VLA 指令候选重排失败: attempt=%d err=%s", attempt, exc)
+                LOGGER.warning("ARM 指令标准化失败: attempt=%d err=%s", attempt, exc)
                 if attempt < self.args.max_retry:
                     time.sleep(self.args.retry_wait)
         if last_error is not None:
             raise last_error
-        raise RuntimeError("VLA 指令候选重排失败，且未捕获到具体异常。")
-
-    def _call_selection_vlm(
-        self,
-        query: str,
-        target_image_path: str,
-        candidates: List[Dict[str, Any]],
-    ) -> str:
-        prompt = self._build_selection_vlm_prompt(query=query, candidates=candidates)
-        image_path = Path(str(target_image_path)).expanduser().resolve()
-        if not image_path.exists():
-            raise FileNotFoundError(f"VLM 目标图像不存在: {image_path}")
-
-        last_error: Exception | None = None
-        for attempt in range(1, self.args.max_retry + 1):
-            try:
-                LOGGER.info(
-                    "VLA 指令候选重排调用 VLM: attempt=%d/%d model=%s image=%s",
-                    attempt,
-                    self.args.max_retry,
-                    self.args.selection_model,
-                    image_path,
-                )
-                response = dashscope.MultiModalConversation.call(
-                    model=self.args.selection_model,
-                    messages=[
-                        {"role": "system", "content": [{"text": "你是移动机器人目标图像匹配助手。"}]},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"image": image_path.as_uri()},
-                                {"text": prompt},
-                            ],
-                        },
-                    ],
-                )
-                return self._extract_generation_text(response)
-            except Exception as exc:
-                last_error = exc
-                LOGGER.warning("VLA 指令候选图像匹配失败: attempt=%d err=%s", attempt, exc)
-                if attempt < self.args.max_retry:
-                    time.sleep(self.args.retry_wait)
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("VLA 指令候选图像匹配失败，且未捕获到具体异常。")
+        raise RuntimeError("ARM 指令标准化失败，且未捕获到具体异常。")
 
     @staticmethod
     def _extract_candidate_index(raw_text: str, num_candidates: int) -> int | None:
@@ -485,87 +348,44 @@ class VLAInstructionRAG:
             return lines[1]
         return text
 
-    def retrieve_instruction(
-        self,
-        query: str,
-        cluster_caption: str | None = None,
-        target_caption: str | None = None,
-        target_image_path: str | None = None,
-    ) -> Dict[str, Any]:
+    def retrieve_instruction(self, query: str) -> Dict[str, Any]:
         query = str(query).strip()
         if not query:
             raise ValueError("query 不能为空")
 
         query_embedding = self._generate_text_embedding(query)
-        cluster_caption = str(cluster_caption or "").strip()
-        target_caption = str(target_caption or "").strip()
-        cluster_embedding = self._generate_text_embedding(cluster_caption) if cluster_caption else None
-        target_embedding = self._generate_text_embedding(target_caption) if target_caption else None
-        candidates = self._retrieve_top_k_multi(
-            query_embedding=query_embedding,
-            cluster_embedding=cluster_embedding,
-            target_embedding=target_embedding,
-        )
-        if target_image_path:
-            llm_raw = self._call_selection_vlm(
-                query=query,
-                target_image_path=target_image_path,
-                candidates=candidates,
-            )
-            selection_mode = "vlm_image_match"
-        else:
-            llm_raw = self._call_selection_llm(
-                query=query,
-                cluster_caption=cluster_caption,
-                target_caption=target_caption,
-                candidates=candidates,
-            )
-            selection_mode = "llm_text_fallback"
+        candidates = self._retrieve_top_k(query_embedding)
+        llm_raw = self._call_selection_llm(query, candidates)
         llm_reason = self._extract_reason(llm_raw)
         selected_idx = self._extract_candidate_index(llm_raw, len(candidates))
+
         if selected_idx is None:
             return {
                 "query": query,
-                "cluster_caption": cluster_caption,
-                "target_caption": target_caption,
                 "instruction": None,
                 "group_index": -1,
                 "group_name": "NO_MATCH",
                 "score": 0.0,
                 "matched": False,
                 "llm_reason": llm_reason,
-                "selection_mode": selection_mode,
                 "selection_model": self.args.selection_model,
                 "embedding_model": self.args.embedding_model,
-                "weights": {
-                    "query": float(self.args.query_weight),
-                    "cluster": float(self.args.cluster_weight),
-                    "target": float(self.args.target_weight),
-                },
                 "selected_candidate_index": -1,
                 "llm_raw": llm_raw,
                 "top_k": candidates,
             }
-        selected = dict(candidates[selected_idx])
 
+        selected = dict(candidates[selected_idx])
         return {
             "query": query,
-            "cluster_caption": cluster_caption,
-            "target_caption": target_caption,
             "instruction": str(selected["instruction"]),
             "group_index": int(selected["group_index"]),
             "group_name": str(selected["group_name"]),
             "score": float(selected["score"]),
             "matched": True,
             "llm_reason": llm_reason,
-            "selection_mode": selection_mode,
             "selection_model": self.args.selection_model,
             "embedding_model": self.args.embedding_model,
-            "weights": {
-                "query": float(self.args.query_weight),
-                "cluster": float(self.args.cluster_weight),
-                "target": float(self.args.target_weight),
-            },
             "selected_candidate_index": int(selected_idx),
             "llm_raw": llm_raw,
             "top_k": candidates,
