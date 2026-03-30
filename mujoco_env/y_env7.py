@@ -102,6 +102,12 @@ class SimpleEnv7(SceneInitMixin, InstructionMixin, MotionMixin, StateObserverMix
         
         # 🔥 杯子选择模式开关（由外部传入）
         self.select_smaller_angle_mug = select_smaller_angle_mug
+        self.tray_support_hidden_pos = np.array([0.0, 0.0, -0.20], dtype=np.float64)
+        self.tray_support_active = {'body_obj_mug_5': False, 'body_obj_mug_6': False}
+        self.tray_support_body_names = {
+            'body_obj_mug_5': 'tray_support_red',
+            'body_obj_mug_6': 'tray_support_blue',
+        }
         # 🔥 托盘初始化模式开关（可由采集脚本在运行时覆盖）
         self.force_tray_init_enabled = False
         # 托盘初始化颜色（单次 reset 消费）：避免跨回合状态泄漏
@@ -439,6 +445,7 @@ class SimpleEnv7(SceneInitMixin, InstructionMixin, MotionMixin, StateObserverMix
         self.is_recording = False
         self.base_auto_parking.reset()
         self.base_action_intent = np.zeros(2, dtype=np.float32)
+        self._deactivate_all_tray_supports()
 
         self._init_objects_demo()
         mug_red_init_pose, mug_blue_init_pose, plate_init_pose = self.get_obj_pose()
@@ -492,6 +499,44 @@ class SimpleEnv7(SceneInitMixin, InstructionMixin, MotionMixin, StateObserverMix
                 f"fallbacks={report.fallback_flags}"
             )
         return report
+
+    def reinitialize_arm_only(self):
+        """Reinitialize only the arm state without moving the base or scene objects."""
+        q_init = np.deg2rad([0, 0, 0, 0, 0, 0])
+        q_zero, _, _ = solve_ik(
+            self.env,
+            self.joint_names,
+            'tcp_link',
+            q_init,
+            np.array([0.3, 0.0, 0.48 + V6_Z_OFFSET]),
+            rpy2r(np.deg2rad([90, -0.0, 90])),
+        )
+        self.env.forward(q=q_zero, joint_names=self.joint_names, increase_tick=False)
+
+        self.last_q = copy.deepcopy(q_zero)
+        initial_gripper_state = 0.0 if self.random_init_gripper_open else 1.0
+        self.current_arm_q = np.concatenate([q_zero, np.array([initial_gripper_state] * 4)])
+        self.current_wheel_vel = np.zeros(2)
+        self.p0, self.R0 = self.env.get_pR_body(body_name='tcp_link')
+        self.gripper_state = bool(initial_gripper_state)
+
+        self.arm_home_q = copy.deepcopy(q_zero)
+        self.returning_home = False
+        self.home_start_q = None
+        self.home_interp_steps = 0
+        self.moving_to_random = False
+        self.random_target_q = None
+        self.random_start_q = None
+        self.random_interp_steps = 0
+        self.random_target_pos = None
+
+        self.expert_policy.reset()
+        self._deactivate_all_tray_supports()
+
+        try:
+            self.grab_image()
+        except Exception:
+            pass
 
     def step(self, action, mode='arm', action_type=None):
         """Execute one control step.
@@ -552,60 +597,70 @@ class SimpleEnv7(SceneInitMixin, InstructionMixin, MotionMixin, StateObserverMix
     def step_env(self):
         full_ctrl = np.concatenate([self.current_arm_q, self.current_wheel_vel])
         self.env.step(full_ctrl)
-        self._enforce_cup_tray_lock()
-        
-    def _enforce_cup_tray_lock(self):
+        self._update_tray_supports()
+
+    def _set_tray_support_local_pos(self, support_body_name, local_pos, forward=False):
+        self.env.set_p_body(
+            body_name=support_body_name,
+            p=np.array(local_pos, dtype=np.float64),
+            forward=forward,
+        )
+
+    def _deactivate_all_tray_supports(self):
+        for mug_name, support_body_name in self.tray_support_body_names.items():
+            self._set_tray_support_local_pos(
+                support_body_name,
+                self.tray_support_hidden_pos,
+                forward=False,
+            )
+            self.tray_support_active[mug_name] = False
+        self.env.forward(increase_tick=False)
+
+    def _update_tray_supports(self):
         """
-        当杯子在小车的推盘上时，锁定它的相对位置，防止倒下或滑落。
+        杯子在托盘上稳定放置后，激活当前位置下方的隐藏杯座。
+        杯座作为托盘子 body，后续会自然跟随底盘，无需持续搬动。
         """
         try:
-            p_tb3, R_tb3 = self.env.get_pR_body('tb3_base')
+            p_tray, R_tray = self.env.get_pR_body('tb3_tray')
             p_tcp = self.env.get_p_body('tcp_link')
-            
-            if not hasattr(self, 'locked_cup_info'):
-                self.locked_cup_info = {}
-                
-            for mug_name in ['body_obj_mug_5', 'body_obj_mug_6']:
-                p_mug, R_mug = self.env.get_pR_body(mug_name)
-                
-                xy_dist = np.linalg.norm(p_mug[:2] - p_tb3[:2])
-                z_diff = p_mug[2] - p_tb3[2]
-                tcp_dist = np.linalg.norm(p_mug - p_tcp)
-                
-                # 判断杯子是否在托盘上且机械臂不在抓取
-                # 托盘高度大约 0.49，杯子中心高度可能在 0.49 左右
-                on_tray = (xy_dist < 0.15) and (0.45 < z_diff < 0.55)
-                arm_away = (tcp_dist > 0.1)
-                
-                if on_tray and arm_away:
-                    if mug_name not in self.locked_cup_info:
-                        # 刚放到托盘上，记录相对位置和姿态
-                        rel_p = R_tb3.T @ (p_mug - p_tb3)
-                        rel_R = R_tb3.T @ R_mug
-                        self.locked_cup_info[mug_name] = {'rel_p': rel_p, 'rel_R': rel_R}
-                    else:
-                        # 已经锁定，强制更新位置
-                        info = self.locked_cup_info[mug_name]
-                        target_p = p_tb3 + R_tb3 @ info['rel_p']
-                        target_R = R_tb3 @ info['rel_R']
-                        
-                        self.env.set_p_base_body(body_name=mug_name, p=target_p)
-                        self.env.set_R_base_body(body_name=mug_name, R=target_R)
-                        
-                        # 尝试将速度清零以防物理引擎积分出大速度
-                        try:
-                            joint_id = self.env.model.body(mug_name).jntadr[0]
-                            qvel_adr = self.env.model.jnt_dofadr[joint_id]
-                            self.env.data.qvel[qvel_adr:qvel_adr+6] = 0.0
-                        except:
-                            pass
-                else:
-                    if mug_name in self.locked_cup_info:
-                        # 离开托盘或机械臂靠近，解除锁定
-                        del self.locked_cup_info[mug_name]
-        except Exception as e:
-            pass
+            support_changed = False
 
+            for mug_name, support_body_name in self.tray_support_body_names.items():
+                p_mug = self.env.get_p_body(mug_name)
+                rel_p = R_tray.T @ (p_mug - p_tray)
+                tcp_dist = np.linalg.norm(p_mug - p_tcp)
+                on_tray = (
+                    abs(rel_p[0]) < 0.085
+                    and abs(rel_p[1]) < 0.085
+                    and 0.035 < rel_p[2] < 0.11
+                )
+                arm_away = tcp_dist > 0.11
+
+                if on_tray and arm_away:
+                    if not self.tray_support_active[mug_name]:
+                        support_local_pos = np.array([rel_p[0], rel_p[1], 0.0], dtype=np.float64)
+                        self._set_tray_support_local_pos(
+                            support_body_name,
+                            support_local_pos,
+                            forward=False,
+                        )
+                        self.tray_support_active[mug_name] = True
+                        support_changed = True
+                else:
+                    if self.tray_support_active[mug_name]:
+                        self._set_tray_support_local_pos(
+                            support_body_name,
+                            self.tray_support_hidden_pos,
+                            forward=False,
+                        )
+                        self.tray_support_active[mug_name] = False
+                        support_changed = True
+
+            if support_changed:
+                self.env.forward(increase_tick=False)
+        except Exception:
+            pass
 
     # ====== 🤖 Expert Policy Delegation (专家策略委托到独立 Agent) ======
     def interpolate_move(self, start_pos, end_pos, steps, gripper_state, add_tremor=False):
@@ -756,4 +811,3 @@ class SimpleEnv7(SceneInitMixin, InstructionMixin, MotionMixin, StateObserverMix
     @expert_trajectory_start_pos.setter
     def expert_trajectory_start_pos(self, value):
         self.expert_policy.expert_trajectory_start_pos = value
-

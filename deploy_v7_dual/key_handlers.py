@@ -352,7 +352,9 @@ def handle_key_g(state: DeployState, env):
 
 
 # =============================================================================
-# T 键：输入自然语言并执行第四阶段检索（仅更新目标，不自动导航）
+# T/U 键：输入自然语言检索
+#   - BASE 模式: T 键 -> 导航 RAG
+#   - ARM  模式: U 键 -> arm instruction RAG
 # =============================================================================
 
 def handle_key_t(
@@ -363,18 +365,17 @@ def handle_key_t(
     vla_executor: ThreadPoolExecutor | None = None,
     arm_instruction_rag=None,
 ):
-    if not env.env.is_key_pressed_once(key=glfw.KEY_T):
-        return
-
     if state.control_mode == 'arm':
+        if not env.env.is_key_pressed_once(key=glfw.KEY_U):
+            return
         if arm_instruction_rag is None:
-            print("\n⚠️ [T] ARM instruction retriever unavailable.")
+            print("\n⚠️ [U] ARM instruction retriever unavailable.")
             return
 
-        print("\n📝 [T] Enter your natural-language arm task query:")
+        print("\n📝 [U] Enter your natural-language arm task query:")
         query_text = input("   > ").strip()
         if not query_text:
-            print("⚠️ [T] Empty query ignored.")
+            print("⚠️ [U] Empty query ignored.")
             return
 
         try:
@@ -394,7 +395,10 @@ def handle_key_t(
                 print(f"【LLM理由】{result['llm_reason']}")
             print("=========================================================")
         except Exception as e:
-            print(f"❌ [T] ARM retrieval failed: {e}")
+            print(f"❌ [U] ARM retrieval failed: {e}")
+        return
+
+    if not env.env.is_key_pressed_once(key=glfw.KEY_T):
         return
 
     if rag_navigator is None:

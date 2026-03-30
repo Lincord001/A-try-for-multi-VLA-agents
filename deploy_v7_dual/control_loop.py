@@ -183,6 +183,28 @@ def check_auto_result(
     # ---- 超时判定 ----
     elif elapsed >= TASK_TIMEOUT_SEC:
         if state.task_sequence_active and state.task_sequence_started:
+            waiting_for_vlm_verdict = (
+                bool(state.arm_vlm_pause_active)
+                and arm_orchestrator is not None
+                and (
+                    getattr(arm_orchestrator, "pending_check", None) is not None
+                    or getattr(arm_orchestrator, "pending_future", None) is not None
+                )
+            )
+            if waiting_for_vlm_verdict:
+                state.deactivate_arm_auto(
+                    arm_runner,
+                    arm_smoother,
+                    disable_auto_check=True,
+                    reset_runner_state=True,
+                )
+                state.arm_vlm_pause_active = True
+                print(
+                    f"\n⏱️ [TASK QUEUE][ARM] Timeout after {TASK_TIMEOUT_SEC}s, "
+                    "but a VLM check is pending. Execution stopped; waiting for VLM verdict."
+                )
+                return False
+
             if trace_manager is not None:
                 trace_manager.stop_arm_episode(
                     reason='task_queue_arm_timeout',
@@ -457,6 +479,7 @@ def handle_arm_orchestrator_event(
         state.arm_vlm_pause_active = False
         print(f"\n⚠️ [ARM-VLM] Verification unavailable after pause: {reason}")
         if state.task_sequence_active and state.task_sequence_started:
+            print("   → Treating current ARM task as failed, then returning home before the next queued task.")
             if trace_manager is not None:
                 trace_manager.stop_arm_episode(reason='task_queue_vlm_verification_unavailable')
             if arm_orchestrator is not None:
@@ -484,7 +507,10 @@ def handle_arm_orchestrator_event(
         print(f"\n🛠️ [ARM-VLM] Recoverable failure: {reason}")
         if rationale:
             print(f"   VLM: {rationale}")
-        print("   → Starting smooth return-home recovery.")
+        if state.task_sequence_active and state.task_sequence_started:
+            print("   → Starting smooth return-home recovery, then retrying the current ARM task.")
+        else:
+            print("   → Starting smooth return-home recovery.")
         return False
 
     if status == 'success':
@@ -493,6 +519,7 @@ def handle_arm_orchestrator_event(
         if rationale:
             print(f"   VLM: {rationale}")
         if state.task_sequence_active and state.task_sequence_started:
+            print("   → Marking current ARM task as success, then returning home before the next queued task.")
             if trace_manager is not None:
                 trace_manager.stop_arm_episode(reason='task_queue_vlm_verified_success')
             if arm_orchestrator is not None:
@@ -531,6 +558,7 @@ def handle_arm_orchestrator_event(
         if rationale:
             print(f"   VLM: {rationale}")
         if state.task_sequence_active and state.task_sequence_started:
+            print("   → Marking current ARM task as failed, then returning home before the next queued task.")
             if trace_manager is not None:
                 trace_manager.stop_arm_episode(reason='task_queue_vlm_verified_failure')
             if arm_orchestrator is not None:
@@ -1037,13 +1065,20 @@ def step_base_nav(
     dist_to_current = float(np.linalg.norm(curr_wp_xy - pos_xy))
 
     # 4) 稳态友好的 P 控制映射到差速轮
-    # 角度误差过大时先原地转向，避免贴近航点时“前冲+急转”抖动。
+    # 直行速度主要参考 lookahead 目标距离，而不是当前 waypoint 距离；
+    # 否则在“持续接近当前点”的过程中会长期被压在较低巡航速度。
     if abs(heading_error) > np.deg2rad(60.0):
         v_forward = 0.0
     else:
-        v_forward = float(np.clip(dist_to_current * 5.0, RAG_MIN_FWD_SPEED, RAG_MAX_FWD_SPEED))
-        heading_scale = float(np.clip(1.0 - abs(heading_error) / np.deg2rad(75.0), 0.0, 1.0))
-        v_forward *= heading_scale
+        cruise_forward = float(
+            np.clip(dist_to_target * 20.0, RAG_MIN_FWD_SPEED, RAG_MAX_FWD_SPEED)
+        )
+        heading_scale = float(np.clip(1.0 - abs(heading_error) / np.deg2rad(90.0), 0.35, 1.0))
+        v_forward = cruise_forward * heading_scale
+        if abs(heading_error) < np.deg2rad(10.0):
+            v_forward = max(v_forward, 6.0)
+        elif abs(heading_error) < np.deg2rad(20.0):
+            v_forward = max(v_forward, 5.0)
         if dist_to_current < RAG_SLOWDOWN_RADIUS and RAG_SLOWDOWN_RADIUS > 1e-6:
             v_forward *= float(np.clip(dist_to_current / RAG_SLOWDOWN_RADIUS, 0.0, 1.0))
 
@@ -1062,5 +1097,7 @@ def step_base_nav(
     if state.step % 20 == 0:
         print(
             f"[RAG] Step {state.step} | idx={state.nav_waypoint_index}/{len(state.nav_waypoints)} "
-            f"| lookahead={lookahead_idx} | dist={dist_to_target:.3f} | err={heading_error:.3f}"
+            f"| lookahead={lookahead_idx} | dist={dist_to_target:.3f} | err={heading_error:.3f} "
+            f"| vfwd={v_forward:.3f} | vturn={v_turn:.3f} "
+            f"| wheel=({wheel_left:.3f}, {wheel_right:.3f})"
         )

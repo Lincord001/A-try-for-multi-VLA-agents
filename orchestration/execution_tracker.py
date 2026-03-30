@@ -120,7 +120,7 @@ class ExecutionTrackerConfig:
     base_lock_min_pre_yaw_delta: float = math.radians(0.8)
     base_lock_min_action_norm: float = 8.0
     base_lock_min_wheel_speed: float = 6.0
-    base_lock_confirmation_count: int = 3
+    base_lock_confirmation_count: int = 4
     base_lock_confirmation_cooldown_seconds: float = 0.2
     base_lock_confirmation_yaw_delta: float = math.radians(6.0)
     base_lock_confirmation_position_radius: float = 0.03
@@ -172,7 +172,7 @@ BASE_VLA_PROFILE = ExecutionTrackerConfig(
     base_lock_min_pre_yaw_delta=math.radians(0.8),
     base_lock_min_action_norm=8.0,
     base_lock_min_wheel_speed=6.0,
-    base_lock_confirmation_count=3,
+    base_lock_confirmation_count=4,
     base_lock_confirmation_cooldown_seconds=0.2,
     base_lock_confirmation_yaw_delta=math.radians(6.0),
     base_lock_confirmation_position_radius=0.03,

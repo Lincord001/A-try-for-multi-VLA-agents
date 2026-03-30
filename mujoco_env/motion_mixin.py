@@ -49,26 +49,12 @@ class MotionMixin:
 
     def teleport_base_and_cups(self, x, y, z, yaw_deg):
         """
-        传送小车到指定位置。如果杯子在托盘上（已锁定），则连同杯子一起传送。
+        传送小车到指定位置。
         """
         yaw_rad = np.deg2rad(yaw_deg)
         new_p = np.array([x, y, z], dtype=np.float32)
         new_R = rpy2r(np.array([0, 0, yaw_rad]))
-        
-        # 如果杯子被锁定，先传送杯子
-        if hasattr(self, 'locked_cup_info'):
-            for mug_name, info in self.locked_cup_info.items():
-                target_p = new_p + new_R @ info['rel_p']
-                target_R = new_R @ info['rel_R']
-                self.env.set_p_base_body(body_name=mug_name, p=target_p)
-                self.env.set_R_base_body(body_name=mug_name, R=target_R)
-                try:
-                    joint_id = self.env.model.body(mug_name).jntadr[0]
-                    qvel_adr = self.env.model.jnt_dofadr[joint_id]
-                    self.env.data.qvel[qvel_adr:qvel_adr+6] = 0.0
-                except:
-                    pass
-                    
+
         # 传送小车
         self.env.set_pR_base_body(body_name='tb3_base', p=new_p, R=new_R)
         try:

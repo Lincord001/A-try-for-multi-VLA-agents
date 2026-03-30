@@ -330,7 +330,8 @@ def _start_arm_task(
     env.set_instruction(given=instruction, task_type="arm")
     state.last_instruction_by_mode["arm"] = instruction
     if reinitialize_arm:
-        env.reset(mode="arm", preserve_instruction=True)
+        env.reinitialize_arm_only()
+        print("\n🔄 [ARM] Reinitialized arm only; preserved base and scene objects.")
 
     state.activate_arm_auto(
         arm_policy,
@@ -424,8 +425,13 @@ def _step_arm_return_home_if_needed(state, env) -> bool:
             print("[TASK QUEUE][ARM] Waiting for smooth return-home to finish.")
         return True
 
-    print("\n🏠 [TASK QUEUE][ARM] Smooth return-home finished.")
     payload = dict(state.task_sequence_arm_post_home_result or {})
+    print("\n🏠 [TASK QUEUE][ARM] Smooth return-home finished.")
+    if payload:
+        print(
+            "[TASK QUEUE][ARM] Post-home result ready: "
+            f"status={payload.get('status')} | reason={payload.get('reason')}"
+        )
     state.task_sequence_arm_return_home_active = False
     state.task_sequence_arm_post_home_result = None
     if payload:
