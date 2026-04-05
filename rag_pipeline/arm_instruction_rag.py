@@ -15,19 +15,23 @@ import numpy as np
 LOGGER = logging.getLogger("arm_instruction_rag")
 
 SELECT_PROMPT_TEMPLATE = (
-    "你是一个机械臂任务指令标准化助手。\n"
-    "用户给出的高层任务是：'{query}'。\n"
-    "下面是系统中可用的候选标准机械臂控制指令。\n"
-    "你的任务不是改写任务，而是判断哪一条候选标准指令在语义上最匹配用户意图。\n"
-    "判定规则：\n"
-    "1. 优先匹配目标物体、颜色、起点位置、终点位置和动作关系。\n"
-    "2. 如果用户语义无法明确对应到某个候选，例如颜色不清楚、起终点关系不清楚，回复 NO_MATCH。\n"
-    "3. 不要凭空创造新指令，只能在候选中选，或回复 NO_MATCH。\n"
-    "请严格按下面格式回复，两行都必须有：\n"
+    "You are a normalization assistant for arm-task instructions.\n"
+    "The user's high-level task is: '{query}'.\n"
+    "Below are the candidate standard arm control instructions currently available in the system.\n"
+    "Your job is not to rewrite the task. Your job is to decide which candidate standard instruction is the closest semantic match to the user's intent.\n"
+    "Decision rules:\n"
+    "1. First determine which high-level skill family the user task belongs to: tabletop pick, tabletop place, load onto a receiving surface, retrieve from a receiving surface, or other tabletop transfer.\n"
+    "2. If a candidate belongs to the same high-level skill family as the user task, prefer selecting the closest one instead of returning NO_MATCH merely because color, container name, or source/destination wording is not exactly the same.\n"
+    "3. For generic references such as 'a cup' or 'a plate', match any candidate that fits that category by default. Do not reject only because color or identity is missing.\n"
+    "4. Historical training labels for locations or containers may be imperfect. Terms such as plate, tray, and table may sometimes be approximate aliases. If the user's intent is clearly a workbench-side loading, placing, or transfer action, prefer approximate matching based on training semantics rather than strict literal token matching.\n"
+    "5. If the user's task is to place an object onto a receiving container, carrying surface, or tray, and a candidate such as 'place the mug on the plate' expresses a near-equivalent receiving-surface placement action, prefer treating it as the same skill family rather than returning NO_MATCH immediately.\n"
+    "6. Return NO_MATCH only if the user's intent is clearly inconsistent with every candidate at the high-level action-type level.\n"
+    "7. Do not invent a new instruction. You must either choose one candidate or return NO_MATCH.\n"
+    "Reply strictly in the following format, and both lines must be present:\n"
     "DECISION: CANDIDATE_2\n"
-    "REASON: 用一句话说明为什么它匹配；如果没有合适候选，就写为什么是 NO_MATCH。\n"
-    "其中 DECISION 必须是某个候选编号，或 NO_MATCH。\n"
-    "候选列表如下：\n"
+    "REASON: Explain in one sentence why it matches; if no candidate fits, explain why it is NO_MATCH.\n"
+    "DECISION must be either one candidate ID or NO_MATCH.\n"
+    "Candidate list:\n"
     "{candidate_lines}\n"
 )
 
@@ -302,7 +306,7 @@ class ArmInstructionRAG:
                 response = dashscope.Generation.call(
                     model=self.args.selection_model,
                     messages=[
-                        {"role": "system", "content": "你是机械臂任务指令标准化助手。"},
+                        {"role": "system", "content": "You are a normalization assistant for arm-task instructions."},
                         {"role": "user", "content": prompt},
                     ],
                 )

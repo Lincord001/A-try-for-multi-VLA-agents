@@ -34,9 +34,11 @@ from tqdm import tqdm
 LOGGER = logging.getLogger("build_semantics")
 
 SEMANTIC_PROMPT = (
-    "你是一个移动机器人的视觉中枢。这是一张由机器人左、前、右三个视角水平拼接而成的全景图。"
-    "请用一到两句话，简明扼要地描述你当前所在的空间类型（如走廊、卧室、厨房、工作区等）"
-    "以及你看到的标志性家具或物品。不要描述图片拼接的缝隙，直接描述环境。"
+    "You are the visual semantic core of a mobile robot. "
+    "This is a panoramic image created by horizontally stitching the robot's left, front, and right camera views. "
+    "Describe in one or two concise sentences the type of space the robot is currently in, such as hallway, bedroom, kitchen, or work area, "
+    "together with the most distinctive furniture or objects that are visible. "
+    "Do not describe stitching seams; describe the environment directly."
 )
 
 

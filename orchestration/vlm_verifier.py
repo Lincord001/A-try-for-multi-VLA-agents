@@ -31,8 +31,8 @@ VERDICTS = {
 }
 
 DEFAULT_SYSTEM_PROMPT = (
-    "你是机器人任务执行验证器。你会看到一个机械臂执行 pick/place 任务后的现场图像。"
-    "你的职责不是复述画面，而是判断任务是否已经成功，或者是否失败但仍可恢复。"
+    "You are a robot task-execution verifier. You will inspect images captured after an arm pick/place task. "
+    "Your job is not to restate the image. Your job is to judge whether the task has succeeded, or failed but is still recoverable."
 )
 
 
@@ -150,43 +150,42 @@ class VLMVerifier:
         context_block = "\n".join(context_lines) if context_lines else "- none"
 
         return (
-            "请根据图像判断当前机械臂 pick/place 任务的执行结果。\n"
-            "你将收到两张图像，并且它们的语义固定如下：\n"
-            "- 第1张图是 agent_view：远景主视角，主要用于观察目标区域、物体是否已放到正确位置。\n"
-            "- 第2张图是 wrist_view：夹爪近景视角，主要用于观察夹爪是否仍然持物、是否已经完成释放。\n"
-            "判断时通常以 agent_view 观察整体布局，以 wrist_view 观察夹爪附近细节。"
-            "但如果 wrist_view 清楚显示目标物体已经掉落、离开工作台面/托盘、卡在边缘或处于明显异常位置，"
-            "则必须优先使用该异常证据，不要因为 agent_view 中看不清就忽略。\n\n"
-            "任务指令:\n"
+            "Judge the outcome of the current arm pick/place task from the images.\n"
+            "You will receive two images with fixed roles:\n"
+            "- Image 1 is agent_view: the wider scene view, mainly for checking the target area and whether the object has reached the correct place.\n"
+            "- Image 2 is wrist_view: the close-up gripper view, mainly for checking whether the gripper still holds the object and whether release has finished.\n"
+            "Usually use agent_view for the overall layout and wrist_view for local gripper details. "
+            "However, if wrist_view clearly shows that the target object has fallen, left the workbench or tray, is stuck at an edge, or is in another obviously abnormal state, that anomaly evidence must take priority even if agent_view is unclear.\n\n"
+            "Task instruction:\n"
             "%s\n\n"
-            "触发检查原因:\n"
+            "Trigger reason:\n"
             "%s\n"
-            "含义解释:\n"
+            "Meaning:\n"
             "%s\n\n"
-            "补充上下文:\n"
+            "Extra context:\n"
             "%s\n\n"
-            "你必须只输出一个 JSON 对象，不要输出任何额外文本。\n"
+            "You must output exactly one JSON object and nothing else.\n"
             "JSON schema:\n"
             "{\n"
             '  "target_identified": "yes" | "no",\n'
             '  "verdict": "success" | "recoverable_failure" | "irrecoverable_failure",\n'
             '  "confidence": 0.0-1.0,\n'
-            '  "rationale": "一句到两句中文简述"\n'
+            '  "rationale": "one or two short sentences"\n'
             "}\n\n"
-            "判断标准:\n"
-            "- 第一步，先从任务指令中识别目标物体及目标关系，不要被画面里其他更显眼但不相关的物体干扰。\n"
-            "- 你必须先显式判断 target_identified 是 yes 还是 no。只有在你能根据图像可靠确认目标物体与任务指令匹配时，才能输出 yes。\n"
-            "- 你必须先检查图中看到的物体是否与任务指令中的目标属性一致，例如颜色、类别、目标区域等。只有属性一致的物体才能当作目标物体。\n"
-            "- 如果图中只看到了与指令不匹配的相似物体，例如颜色不对、类别不对、位置关系不对，不能把它当作目标物体，也不能据此判断任务可恢复。\n"
-            "- 如果两张图里都无法可靠识别目标物体，必须明确按“目标物体不可确认”处理，而不是默认把别的显眼物体当成目标。\n"
-            "- success: 目标物体已经按指令到达正确区域或目标位置，且机械臂/夹爪没有继续持有它。\n"
-            "- recoverable_failure: 当前未成功，但目标物体仍在可操作区域内、可达、未掉落到地面、未明显脱离任务场景，机械臂可以重新尝试。\n"
-            "- irrecoverable_failure: 当前场景已明显不可恢复，例如目标物体掉到地面、离开工作台/托盘等可操作平面、掉到不可达区域、严重碰撞、明显倾覆并脱离可直接重试状态，或完全脱离任务场景。\n"
-            "- 如果任一视角清楚显示目标物体已经掉落到地面或离开可操作平面，应优先判为 irrecoverable_failure，而不是 recoverable_failure。\n"
-            "- 对于 timeout_without_tail_event 这种超时检查，如果目标物体在图中不可可靠识别，或者只能看到与指令不匹配的其他物体，默认不要判为 recoverable_failure；应优先考虑 irrecoverable_failure。\n"
-            "- 如果两张图信息冲突，请保守判断，不要贸然判 success；同时优先关注与目标物体直接相关的异常证据。\n"
-            "- 不要因为机械臂还停在画面里就判失败，重点看任务目标物与目标区域、可操作区域之间的关系。\n"
-            "- 你必须结合任务指令判断，不要只基于“画面看起来正常”来回答。\n"
+            "Judgment criteria:\n"
+            "- First identify the target object and target relation from the task instruction. Do not get distracted by more salient but irrelevant objects in the image.\n"
+            "- You must explicitly decide target_identified as yes or no first. Output yes only when the target object can be reliably matched to the task instruction from the images.\n"
+            "- Check whether the visible object matches the target attributes in the instruction, such as color, category, and target region. Only an attribute-consistent object can be treated as the target.\n"
+            "- If the images show only similar but non-matching objects, such as wrong color, wrong category, or wrong spatial relation, do not treat them as the target and do not use them to justify recoverable_failure.\n"
+            "- If the target object cannot be reliably identified in either image, handle it explicitly as target not identifiable instead of defaulting to some other salient object.\n"
+            "- success: the target object has reached the correct region or target placement specified by the instruction, and the arm or gripper is no longer holding it.\n"
+            "- recoverable_failure: the task has not succeeded yet, but the target object is still within the operable area, reachable, not dropped to the floor, and not clearly outside the task scene, so the arm could retry.\n"
+            "- irrecoverable_failure: the scene is clearly not directly recoverable, for example the target object has fallen to the floor, left the workbench or tray surface, moved to an unreachable area, suffered a severe collision, tipped into a state outside direct retry, or otherwise left the task scene.\n"
+            "- If either view clearly shows that the target object has fallen to the floor or left the operable surface, prefer irrecoverable_failure over recoverable_failure.\n"
+            "- For timeout_without_tail_event checks, if the target object is not reliably identifiable or only mismatching objects are visible, do not default to recoverable_failure; prefer irrecoverable_failure.\n"
+            "- If the two images conflict, judge conservatively. Do not claim success hastily, and prioritize anomaly evidence directly tied to the target object.\n"
+            "- Do not fail the task just because the arm is still visible in the image. Focus on the relation between the task target, the target area, and the operable area.\n"
+            "- You must reason from both the instruction and the images. Do not answer only because the scene looks normal.\n"
         ) % (instruction, trigger_reason, trigger_reason_explanation, context_block)
 
     @retry(
@@ -215,7 +214,7 @@ class VLMVerifier:
 
         user_content: List[Dict[str, str]] = []
         for item in resolved_items:
-            user_content.append({"text": "下面这张图的标签是: %s" % item["label"]})
+            user_content.append({"text": "The label of the following image is: %s" % item["label"]})
             user_content.append({"image": item["path"].as_uri()})
         user_content.append({"text": user_prompt})
 
@@ -235,20 +234,20 @@ class VLMVerifier:
     def _describe_trigger_reason(trigger_reason: str) -> str:
         mapping = {
             "arm_tail_event_detected": (
-                "监视器检测到一个疑似任务尾部动作：先持物/闭夹，随后在较低位置释放，并在释放后上抬。"
-                "这通常意味着 VLA 可能已经完成了放置动作，因此需要视觉确认是否真的成功。"
+                "The monitor detected a likely tail event: the arm was holding an object, then released at a relatively low position, and then lifted after release. "
+                "This usually means the VLA may have completed a placement, so visual confirmation is needed."
             ),
             "arm_timeout_without_tail_event": (
-                "监视器在预设时限内没有看到明显的尾部放置动作。"
-                "这通常意味着任务可能卡住、失败，或者已经处于异常状态，因此需要视觉判断当前场景是成功、可恢复失败还是不可恢复失败。"
+                "The monitor did not observe a clear tail placement event within the time limit. "
+                "This usually means the task may be stuck, failed, or already in an abnormal state, so vision must decide whether the current scene is success, recoverable failure, or irrecoverable failure."
             ),
             "manual_check": (
-                "这是一次人工触发的视觉复核，请直接根据图像和任务指令判断最终状态。"
+                "This is a manually triggered visual review. Judge the final state directly from the images and the task instruction."
             ),
         }
         return mapping.get(
             str(trigger_reason),
-            "这是一次运行时视觉状态检查，请结合任务指令和图像判断任务是否成功，或者是否仍可恢复。",
+            "This is a runtime visual status check. Use the task instruction and the images to judge whether the task succeeded or remains recoverable.",
         )
 
     @staticmethod

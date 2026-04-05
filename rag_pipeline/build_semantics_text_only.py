@@ -34,9 +34,13 @@ from tqdm import tqdm
 LOGGER = logging.getLogger("build_semantics")
 
 SEMANTIC_PROMPT = (
-    "你是一个移动机器人的视觉中枢。这是一张由机器人左、前、右三个视角水平拼接而成的全景图。"
-    "请用一到两句话，简明扼要地描述你当前所在的空间类型（如走廊、卧室、厨房、工作区等）"
-    "以及你看到的标志性家具或物品。不要描述图片拼接的缝隙，直接描述环境。"
+    "You are the visual perception module of a mobile robot. "
+    "This is a panoramic image stitched horizontally from the robot's left, front, and right views. "
+    "Describe the current space type in one or two concise English sentences "
+    "(for example, hallway, bedroom, kitchen, workspace, etc.) "
+    "and mention the most distinctive furniture or objects you can see. "
+    "Do not mention stitching seams; describe the environment directly. "
+    "Output English only."
 )
 
 
@@ -61,13 +65,13 @@ def parse_args() -> SemanticArgs:
     parser.add_argument(
         "--output_json",
         type=str,
-        default="topology_output/semantic_topological_map_text_only.json",
+        default="topology_output/semantic_topological_map_text_only_en.json",
         help="输出语义拓扑图 JSON 路径",
     )
     parser.add_argument(
         "--caption_output_json",
         type=str,
-        default="topology_output/semantic_topological_map_text_only_captions_only.json",
+        default="topology_output/semantic_topological_map_text_only_en_captions_only.json",
         help="仅包含节点描述文本的输出 JSON 路径",
     )
     parser.add_argument(

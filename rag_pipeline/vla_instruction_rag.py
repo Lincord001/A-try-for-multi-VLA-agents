@@ -15,44 +15,45 @@ import numpy as np
 LOGGER = logging.getLogger("vla_instruction_rag")
 
 SELECT_PROMPT_TEMPLATE = (
-    "你是一个移动机器人目标语义匹配助手。\n"
-    "已知信息如下：\n"
-    "- 用户原始任务：'{query}'\n"
-    "- RAG 宏观区域摘要：'{cluster_caption}'\n"
-    "- RAG 微观目标点描述：'{target_caption}'\n"
-    "下面是已经通过向量召回得到的候选 VLA 控制指令。\n"
-    "你的任务不是规划路径，也不是改写任务，而是判断这些候选指令中，"
-    "是否存在一条在语义上明确匹配当前目标区域/目标点、可以在机器人已经到达该目标附近后使用的局部控制指令。\n"
-    "判定规则：\n"
-    "1. 只有当候选指令与当前目标区域和目标点语义明确匹配时，才能选择它。\n"
-    "2. 如果候选指令描述的是别的区域、别的目标，或者语义上不够确定，就不能选。\n"
-    "3. 如果没有任何候选满足要求，回复 NO_MATCH。\n"
-    "请严格按下面格式回复，两行都必须有：\n"
+    "You are a semantic matching assistant for mobile-robot control instructions.\n"
+    "Known information:\n"
+    "- Original user task: '{query}'\n"
+    "- RAG macro region summary: '{cluster_caption}'\n"
+    "- RAG micro target caption: '{target_caption}'\n"
+    "Below are candidate VLA control instructions retrieved by vector search.\n"
+    "Your task is not to plan a path and not to rewrite the task. "
+    "Instead, determine whether any candidate is a clear semantic match for the current target region or target point, "
+    "such that it could be used locally after the robot has already arrived near the target.\n"
+    "Decision rules:\n"
+    "1. Select a candidate only if it clearly matches both the target region and the target point semantics.\n"
+    "2. If a candidate refers to a different region, a different target, or the semantic match is not clear enough, do not select it.\n"
+    "3. If no candidate satisfies the requirement, reply with NO_MATCH.\n"
+    "Reply strictly in the following format, and both lines must be present:\n"
     "DECISION: CANDIDATE_2\n"
-    "REASON: 用一句话说明为什么它匹配当前目标；如果没有合适候选，就写为什么是 NO_MATCH。\n"
-    "其中 DECISION 必须是某个候选编号，或 NO_MATCH。\n"
-    "候选列表如下：\n"
+    "REASON: Explain in one sentence why it matches the current target; if none fits, explain why it is NO_MATCH.\n"
+    "DECISION must be either one candidate ID or NO_MATCH.\n"
+    "Candidate list:\n"
     "{candidate_lines}\n"
 )
 
 SELECT_VLM_PROMPT_TEMPLATE = (
-    "你是一个移动机器人目标图像匹配助手。\n"
-    "用户当前高层任务是：'{query}'。\n"
-    "你将看到一张 RAG 检索得到的目标节点图像。"
-    "这不是单视角照片，而是一张由机器人左、前、右三个视角水平拼接而成的全景图。\n"
-    "请综合整张拼接图判断环境语义，不要把拼接缝隙当成真实结构，也不要只根据某一个局部视角中的显眼物体就下结论。\n"
-    "你的任务不是规划路径，也不是复述画面，而是判断下面这些候选 VLA 控制指令中，"
-    "是否存在一条在语义上明确匹配这张目标图像所对应区域/目标物的局部控制指令。\n"
-    "判定规则：\n"
-    "1. 以图像中真实可见的目标区域、目标物和场景语义为主进行判断，同时必须参考用户高层任务。\n"
-    "2. 允许候选指令与图像中的目标不是字面同名，但如果它们明显指向同一物体、同一区域或同一功能位置，可以判为匹配。\n"
-    "3. 如果候选指令虽然能解释图像中的某个显眼物体，但明显不符合用户高层任务，就不能选。\n"
-    "4. 如果图像信息不足，或所有候选都与图像语义及用户任务都不明确匹配，就回复 NO_MATCH。\n"
-    "请严格按下面格式回复，两行都必须有：\n"
+    "You are a target-image matching assistant for a mobile robot.\n"
+    "The user's current high-level task is: '{query}'.\n"
+    "You will see a target-node image retrieved by RAG. "
+    "This is not a single-view photo. It is a panoramic image stitched horizontally from the robot's left, front, and right views.\n"
+    "Judge the scene semantics using the full panorama. Do not treat stitching seams as real structure, and do not rely on only one locally salient object.\n"
+    "Your task is not to plan a path and not to restate the image. "
+    "Instead, determine whether any of the following candidate VLA control instructions is a clear semantic match for the region or object shown in this target image.\n"
+    "Decision rules:\n"
+    "1. Base the judgment on the true visible target region, target object, and scene semantics in the image, while also considering the user's high-level task.\n"
+    "2. A candidate does not need to use the exact same wording as the image target. If they clearly refer to the same object, the same region, or the same functional location, it can count as a match.\n"
+    "3. If a candidate can explain some salient object in the image but clearly does not fit the user's high-level task, do not select it.\n"
+    "4. If the image is insufficient or none of the candidates clearly matches both the image semantics and the user task, reply with NO_MATCH.\n"
+    "Reply strictly in the following format, and both lines must be present:\n"
     "DECISION: CANDIDATE_2\n"
-    "REASON: 用一句话说明为什么它匹配当前图像目标；如果没有合适候选，就写为什么是 NO_MATCH。\n"
-    "其中 DECISION 必须是某个候选编号，或 NO_MATCH。\n"
-    "候选列表如下：\n"
+    "REASON: Explain in one sentence why it matches the current image target; if none fits, explain why it is NO_MATCH.\n"
+    "DECISION must be either one candidate ID or NO_MATCH.\n"
+    "Candidate list:\n"
     "{candidate_lines}\n"
 )
 
@@ -395,7 +396,7 @@ class VLAInstructionRAG:
                 response = dashscope.Generation.call(
                     model=self.args.selection_model,
                     messages=[
-                        {"role": "system", "content": "你是具身移动机器人控制指令检索助手。"},
+                        {"role": "system", "content": "You are a retrieval assistant for embodied mobile-robot control instructions."},
                         {"role": "user", "content": prompt},
                     ],
                 )
@@ -433,7 +434,7 @@ class VLAInstructionRAG:
                 response = dashscope.MultiModalConversation.call(
                     model=self.args.selection_model,
                     messages=[
-                        {"role": "system", "content": [{"text": "你是移动机器人目标图像匹配助手。"}]},
+                        {"role": "system", "content": [{"text": "You are a target-image matching assistant for a mobile robot."}]},
                         {
                             "role": "user",
                             "content": [

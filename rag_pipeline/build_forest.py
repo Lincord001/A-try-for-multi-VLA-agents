@@ -36,10 +36,12 @@ from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait
 LOGGER = logging.getLogger("build_forest")
 
 SUMMARY_PROMPT_TEMPLATE = (
-    "你是一个室内空间的智能助手。这里有几段对同一个小区域内不同视角的描述：\n"
+    "You are an assistant for indoor spatial abstraction. "
+    "Below are several descriptions from different viewpoints within the same small area:\n"
     "{captions}\n"
-    "请你用一句话（不超过15个字）概括这个区域的核心功能或主要家具，例如"
-    "'厨房的烹饪与洗涤区'或'包含双人床的主卧'。直接输出摘要，不要任何废话。"
+    "Summarize this area in one short English phrase, focusing on its main function or key furniture. "
+    "Examples: 'kitchen prep and sink area' or 'master bedroom with a double bed'. "
+    "Output English only. No extra explanation."
 )
 
 
@@ -60,13 +62,13 @@ def parse_args() -> ForestArgs:
     parser.add_argument(
         "--input_json",
         type=str,
-        default="topology_output/semantic_topological_map_text_only.json",
+        default="topology_output/semantic_topological_map_text_only_en.json",
         help="输入语义拓扑图 JSON 路径（node-link 格式）",
     )
     parser.add_argument(
         "--output_json",
         type=str,
-        default="topology_output/forest_topological_map.json",
+        default="topology_output/forest_topological_map_en.json",
         help="输出森林拓扑图 JSON 路径",
     )
     parser.add_argument(
@@ -328,7 +330,7 @@ class ForestBuilder:
                     response = dashscope.Generation.call(
                         model=self.args.summary_model,
                         messages=[
-                            {"role": "system", "content": "你是室内空间语义抽象专家。"},
+                            {"role": "system", "content": "You are an expert in indoor semantic abstraction."},
                             {"role": "user", "content": prompt},
                         ],
                     )

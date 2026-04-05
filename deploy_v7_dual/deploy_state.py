@@ -104,6 +104,10 @@ class DeployState:
     rag_vla_retrieval_pending: bool = False
     rag_vla_retrieval_error: Optional[str] = None
     rag_vla_handoff_waiting: bool = False
+    task_decomp_input_future: Optional[Any] = None
+    task_decomp_future: Optional[Any] = None
+    task_decomp_pending_instruction: Optional[str] = None
+    task_decomp_error: Optional[str] = None
 
     # ---------- 串行任务队列 ----------
     task_sequence_active: bool = False

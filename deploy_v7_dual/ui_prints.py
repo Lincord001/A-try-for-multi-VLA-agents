@@ -114,6 +114,7 @@ def print_controls_guide(control_mode):
     print("  [G] Teleport Base (and cup if locked) to (4.25, 3.5, 0) yaw=-s57.1")
     print("  [T] Retrieve nav target from natural-language query (BASE mode)")
     print("  [U] Retrieve normalized arm instruction from natural-language query (ARM mode)")
+    print("  [Y] Decompose a natural-language user task and launch the serial task queue")
     print("  [R] Toggle RAG Navigation (BASE mode only, uses retrieved target if available)")
     print("  [P] Toggle JSON serial task queue")
     print("  [Q] Quit")

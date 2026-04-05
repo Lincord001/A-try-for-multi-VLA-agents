@@ -23,12 +23,12 @@ LOGGER = logging.getLogger("rag_navigator")
 CLUSTER_ID_PATTERN = re.compile(r"Cluster_\d+")
 
 MACRO_PROMPT_TEMPLATE = (
-    "你是一个具身智能机器人的领航员。用户指令是：'{query}'。\n"
-    "目前环境中有以下候选区域：\n"
+    "You are the navigation planner for an embodied robot. The user's request is: '{query}'.\n"
+    "The environment currently contains the following candidate regions:\n"
     "{cluster_lines}\n"
-    "请推理用户指令最有可能指向哪个区域？"
-    "你必须且只能回复选中的区域 ID（例如：Cluster_1），"
-    "不要输出任何其他解释和标点符号。"
+    "Reason about which region is the most likely target of the user's request. "
+    "You must reply with the selected region ID only (for example: Cluster_1). "
+    "Do not output any explanation or punctuation."
 )
 
 
@@ -214,7 +214,7 @@ class RAGNavigator:
                 if isinstance(caption, str) and caption.strip():
                     cluster_info[str(node_id)] = caption.strip()
                 else:
-                    cluster_info[str(node_id)] = "未知区域"
+                    cluster_info[str(node_id)] = "unknown area"
         if not cluster_info:
             raise RuntimeError("图中没有可用的 cluster_parent 节点。")
         LOGGER.info("候选父区域数量: %d", len(cluster_info))
@@ -239,7 +239,7 @@ class RAGNavigator:
                 response = dashscope.Generation.call(
                     model=self.args.macro_model,
                     messages=[
-                        {"role": "system", "content": "你是具身智能机器人的路径规划领航员。"},
+                        {"role": "system", "content": "You are the navigation planner for an embodied robot."},
                         {"role": "user", "content": prompt},
                     ],
                 )
@@ -387,15 +387,15 @@ class RAGNavigator:
         LOGGER.info("用户指令: %s", self.args.query)
         result = self.retrieve_top_leaf(self.args.query)
 
-        print("\n================ Embodied-RAG 检索报告 ================")
-        print(f"【用户指令】{result['query']}")
-        print(f"【宏观决策】{result['cluster_id']} | 区域摘要: {result['cluster_caption']}")
+        print("\n================ Embodied-RAG Retrieval Report ================")
+        print(f"[User Query] {result['query']}")
+        print(f"[Macro Decision] {result['cluster_id']} | Region Summary: {result['cluster_caption']}")
         print(
-            f"【微观匹配】{result['target_node']} | 描述: {result['target_caption']} "
-            f"| 余弦相似度: {result['score']:.6f}"
+            f"[Micro Match] {result['target_node']} | Caption: {result['target_caption']} "
+            f"| Cosine Similarity: {result['score']:.6f}"
         )
         print(
-            f"【最终导航系坐标】(x, y) = "
+            f"[Final Navigation Coordinates] (x, y) = "
             f"({result['target_xy'][0]:.6f}, {result['target_xy'][1]:.6f})"
         )
         print("======================================================\n")

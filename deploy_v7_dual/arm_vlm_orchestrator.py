@@ -313,8 +313,16 @@ class ArmVLMOrchestrator:
         zero_action = np.concatenate([np.zeros(6, dtype=np.float32), [float(env.gripper_state)]], dtype=np.float32)
         env.step(zero_action, mode='arm', action_type='eef_pose')
         env.p0, env.R0 = env.env.get_pR_body(body_name='tcp_link')
+        total_steps = int(max(getattr(env, "home_total_steps", 0), 1))
+        interp_steps = int(getattr(env, "home_interp_steps", 0))
+        if interp_steps == 1 or interp_steps % 10 == 0:
+            print(
+                "\n[ARM-VLM] Recovery in progress: "
+                f"{interp_steps}/{total_steps} step(s) of smooth return-home."
+            )
         if not getattr(env, "returning_home", False):
             self.recovery_active = False
+            print("\n[ARM-VLM] Recovery completed: smooth return-home finished.")
             if self.current_task_dir is not None:
                 self._write_task_manifest(
                     self.current_task_dir,
@@ -342,6 +350,10 @@ class ArmVLMOrchestrator:
         arm_smoother.reset()
         arm_smoother.prime_from_state(current_state)
         self.resume_warmup_steps_remaining = int(max(ARM_VLM_HANDOFF_WARMUP_STEPS, 0))
+        print(
+            "\n[ARM-VLM] Recovery handoff complete: "
+            "ARM policy/runner reset, auto control will resume on the next control tick."
+        )
 
     def limit_resume_action(self, action_step, robot_state):
         if action_step is None or self.resume_warmup_steps_remaining <= 0:

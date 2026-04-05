@@ -171,3 +171,13 @@ VLA_RAG_TARGET_WEIGHT = 0.3
 ARM_RAG_CACHE_JSON = "./topology_output/arm_instruction_embeddings.json"
 ARM_RAG_TOP_K = 3
 ARM_RAG_SELECTION_MODEL = "qwen-max"
+
+# ==========================================
+# 🧩 任务拆解器配置
+# ==========================================
+TASK_DECOMPOSER_ENABLED = True
+TASK_DECOMPOSER_TEXT_MODEL = "qwen-max"
+TASK_DECOMPOSER_VISION_MODEL = "qwen3.5-plus-2026-02-15"
+TASK_DECOMPOSER_NAV_TOP_K = 4
+TASK_DECOMPOSER_EMBEDDING_MODEL = "text-embedding-v4"
+TASK_DECOMPOSER_STREAM_OUTPUT = False

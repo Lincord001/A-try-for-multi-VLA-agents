@@ -106,6 +106,12 @@ from deploy_v7_dual.config import (
     ARM_VLM_ORCHESTRATION_ENABLED,
     ARM_VLM_CHECK_OUTPUT_DIR,
     ARM_VLM_MODEL,
+    TASK_DECOMPOSER_ENABLED,
+    TASK_DECOMPOSER_TEXT_MODEL,
+    TASK_DECOMPOSER_VISION_MODEL,
+    TASK_DECOMPOSER_NAV_TOP_K,
+    TASK_DECOMPOSER_EMBEDDING_MODEL,
+    TASK_DECOMPOSER_STREAM_OUTPUT,
 )
 from deploy_v7_dual.runtime_components import (
     ActionSmoother,
@@ -125,7 +131,9 @@ from deploy_v7_dual.key_handlers import (
     handle_key_r,
     handle_key_t,
     handle_key_p,
+    handle_key_y,
     process_pending_vla_retrieval,
+    process_pending_task_decomposition,
 )
 from deploy_v7_dual.control_loop import (
     check_auto_result,
@@ -147,6 +155,7 @@ from deploy_v7_dual.ui_prints import (
 from deploy_v7_dual.execution_trace_manager import ExecutionTraceManager
 from deploy_v7_dual.arm_vlm_orchestrator import ArmVLMOrchestrator
 from deploy_v7_dual.task_sequence import advance_task_sequence
+from orchestration.task_decomposer import TaskDecomposer, DashScopeTaskDecompositionBackend
 
 from mujoco_env.instruction_utils import (
     INSTRUCTION_GROUPS,
@@ -433,6 +442,21 @@ def main():
         print(f"🧠 [ARM-RAG] Instruction retriever loaded: {ARM_RAG_CACHE_JSON}")
     except Exception as e:
         print(f"⚠️ [ARM-RAG] Instruction retriever init failed, arm query normalization disabled: {e}")
+    task_decomposer = None
+    if TASK_DECOMPOSER_ENABLED:
+        try:
+            task_decomposer = TaskDecomposer(
+                backend=DashScopeTaskDecompositionBackend(
+                    text_model=TASK_DECOMPOSER_TEXT_MODEL,
+                    vision_model=TASK_DECOMPOSER_VISION_MODEL,
+                    stream_output=TASK_DECOMPOSER_STREAM_OUTPUT,
+                ),
+                nav_top_k=TASK_DECOMPOSER_NAV_TOP_K,
+                embedding_model=TASK_DECOMPOSER_EMBEDDING_MODEL,
+            )
+            print("🧩 [TASK-DECOMP] Task decomposer loaded.")
+        except Exception as e:
+            print(f"⚠️ [TASK-DECOMP] Task decomposer init failed: {e}")
 
     try:
         while PnPEnv.env.is_viewer_alive():
@@ -442,6 +466,12 @@ def main():
             # [B] 控制循环
             if PnPEnv.env.loop_every(HZ=CONTROL_FREQUENCY):
                 process_pending_vla_retrieval(state)
+                process_pending_task_decomposition(
+                    state,
+                    PnPEnv,
+                    task_decomposer,
+                    rag_navigator=rag_navigator,
+                )
 
                 # --- 键位处理 ---
                 handle_key_c(state, PnPEnv, arm_policy, arm_runner, base_runner,
@@ -468,6 +498,12 @@ def main():
                     state,
                     PnPEnv,
                     TASK_SEQUENCE_JSON,
+                )
+                handle_key_y(
+                    state,
+                    PnPEnv,
+                    task_decomposer,
+                    rag_navigator=rag_navigator,
                 )
                 handle_key_r(
                     state,

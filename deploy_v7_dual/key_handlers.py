@@ -7,19 +7,26 @@ key_handlers.py
 """
 
 from concurrent.futures import ThreadPoolExecutor
+import json
+from pathlib import Path
+import tempfile
 
 import glfw
 import numpy as np
+from PIL import Image
 
 from mujoco_env.instruction_utils import (
     INSTRUCTION_GROUPS,
     get_group_info as _get_group_info,
     apply_instruction_from_group as _apply_instruction_from_group,
 )
+from orchestration.task_decomposer import build_navigation_scene_context
 
 from .deploy_state import DeployState
 from .config import ARM_SYNC_INFERENCE
 from .task_sequence import start_task_sequence_from_file
+
+_TASK_DECOMP_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="task_decomp")
 
 
 def _submit_vla_retrieval(vla_instruction_rag, request_id, query, cluster_caption, target_caption, target_image_path):
@@ -31,6 +38,19 @@ def _submit_vla_retrieval(vla_instruction_rag, request_id, query, cluster_captio
     )
     result["request_id"] = int(request_id)
     return result
+
+
+def _prompt_user_task_input() -> str:
+    print("\n📝 [Y] Enter your natural-language user task:")
+    return input("   > ").strip()
+
+
+def _submit_task_decomposition(task_decomposer, user_instruction: str, agent_image_path: str, navigation_context):
+    return task_decomposer.decompose_user_task(
+        user_instruction,
+        agent_image_path=agent_image_path,
+        navigation_context=navigation_context,
+    )
 
 
 def process_pending_vla_retrieval(state: DeployState):
@@ -72,6 +92,147 @@ def process_pending_vla_retrieval(state: DeployState):
     )
     if vla_result.get("llm_reason"):
         print(f"   LLM reason: {vla_result['llm_reason']}")
+
+
+def process_pending_task_decomposition(
+    state: DeployState,
+    env,
+    task_decomposer,
+    rag_navigator=None,
+):
+    input_future = state.task_decomp_input_future
+    if input_future is not None and input_future.done():
+        state.task_decomp_input_future = None
+        try:
+            user_instruction = str(input_future.result()).strip()
+        except Exception as exc:
+            state.task_decomp_error = str(exc)
+            print(f"\n❌ [Y] Failed to read task input: {exc}")
+            user_instruction = ""
+
+        if not user_instruction:
+            if state.task_decomp_error is None:
+                print("⚠️ [Y] Empty instruction ignored.")
+        else:
+            state.task_decomp_pending_instruction = user_instruction
+            state.task_decomp_error = None
+            print(f"\n📝 [Y] Task input received: {user_instruction}")
+
+    if state.task_decomp_future is None and state.task_decomp_pending_instruction:
+        if task_decomposer is None:
+            print("\n⚠️ [Y] Task decomposer unavailable.")
+            state.task_decomp_pending_instruction = None
+            return
+        try:
+            agent_image_path = _write_agent_view_snapshot(env, prefix="deploy_task_decomposer_agent")
+        except Exception as exc:
+            state.task_decomp_error = str(exc)
+            state.task_decomp_pending_instruction = None
+            print(f"\n❌ [Y] Failed to capture current agent view: {exc}")
+            return
+
+        navigation_context = None
+        if rag_navigator is not None:
+            try:
+                current_pose = _get_current_base_pose(env)
+                navigation_context = build_navigation_scene_context(
+                    current_pose=current_pose,
+                    rag_navigator=rag_navigator,
+                ).to_dict()
+            except Exception as exc:
+                print(f"\n⚠️ [Y] Failed to build navigation context, continuing without it: {exc}")
+                navigation_context = None
+
+        user_instruction = str(state.task_decomp_pending_instruction)
+        print("\n🧩 [Y] Task decomposition started in background.")
+        state.task_decomp_future = _TASK_DECOMP_EXECUTOR.submit(
+            _submit_task_decomposition,
+            task_decomposer,
+            user_instruction,
+            agent_image_path,
+            navigation_context,
+        )
+        state.task_decomp_pending_instruction = None
+
+    future = state.task_decomp_future
+    if future is None or not future.done():
+        return
+
+    state.task_decomp_future = None
+    try:
+        result = future.result()
+    except Exception as exc:
+        state.task_decomp_error = str(exc)
+        print(f"\n❌ [Y] Task decomposition failed: {exc}")
+        return
+
+    print("\n================ Task Decomposition Report ================")
+    print(f"【用户任务】{result.user_instruction}")
+    print(f"【是否可执行】{result.feasible}")
+    print(f"【总结】{result.summary_for_user}")
+    print("【逐步诊断】")
+    for item in result.diagnostics:
+        print(
+            f"  - step={int(item['step_index']) + 1} "
+            f"executor={item.get('executor') or 'UNKNOWN'} "
+            f"status={item.get('status')} "
+            f"reason={item.get('reason_code')}: {item.get('reason_text')}"
+        )
+    if result.llm_debug_records:
+        print("【模型原始输出】")
+        for idx, record in enumerate(result.llm_debug_records, start=1):
+            stage = str(record.get("stage", "")).strip() or "unknown_stage"
+            model = str(record.get("model", "")).strip() or "unknown_model"
+            mode = "multimodal" if record.get("multimodal") else "text"
+            raw_text = str(record.get("raw_text", "")).strip()
+            print(f"  - #{idx} stage={stage} model={model} mode={mode}")
+            if raw_text:
+                print("    raw_text:")
+                print(raw_text)
+            print("    parsed_payload:")
+            print(json.dumps(record.get("parsed_payload", {}), ensure_ascii=False, indent=2))
+    if result.feasible:
+        print("【任务队列】")
+        for idx, task in enumerate(result.normalized_tasks, start=1):
+            print(f"  - #{idx}: {task}")
+    print("==========================================================")
+
+    if not result.feasible:
+        print("   → Queue not started because the task is not fully executable.")
+        return
+
+    if state.task_sequence_active:
+        state.stop_task_sequence("task_decomposer_replace_queue")
+
+    state.start_task_sequence(tasks=result.normalized_tasks, source_path="[task_decomposer]")
+    print(
+        f"\n▶️ [TASK QUEUE] Loaded {len(result.normalized_tasks)} tasks from task decomposer."
+    )
+    print("   → The queue will begin automatically on the next control tick.")
+
+
+def _write_agent_view_snapshot(env, *, prefix: str = "task_decomposer_agent") -> str:
+    env.grab_image()
+    rgb_agent = getattr(env, "rgb_agent", None)
+    if rgb_agent is None:
+        raise RuntimeError("当前环境中没有可用的 agent view 图像。")
+    array = np.asarray(rgb_agent)
+    if array.ndim != 3 or array.shape[2] not in (3, 4):
+        raise RuntimeError(f"agent view 图像格式非法: shape={array.shape}")
+    if array.dtype != np.uint8:
+        array = np.clip(array, 0, 255).astype(np.uint8)
+    image = Image.fromarray(array[:, :, :3])
+    output_dir = Path(tempfile.gettempdir()) / "task_decomposer_images"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{prefix}.png"
+    image.save(output_path)
+    return str(output_path.resolve())
+
+
+def _get_current_base_pose(env) -> np.ndarray:
+    p_tb3, R_tb3 = env.env.get_pR_body("tb3_base")
+    yaw = float(np.arctan2(float(R_tb3[1, 0]), float(R_tb3[0, 0])))
+    return np.array([float(p_tb3[0]), float(p_tb3[1]), yaw], dtype=np.float64)
 
 
 # =============================================================================
@@ -489,6 +650,29 @@ def handle_key_p(state: DeployState, env, task_sequence_json: str):
         print("   → The queue will begin automatically on the next control tick.")
     except Exception as exc:
         print(f"\n❌ [P] Failed to load task queue: {exc}")
+
+
+def handle_key_y(
+    state: DeployState,
+    env,
+    task_decomposer,
+    rag_navigator=None,
+):
+    if not env.env.is_key_pressed_once(key=glfw.KEY_Y):
+        return
+
+    if task_decomposer is None:
+        print("\n⚠️ [Y] Task decomposer unavailable.")
+        return
+
+    if state.task_decomp_input_future is not None or state.task_decomp_future is not None:
+        print("\nℹ️ [Y] Task decomposition already in progress.")
+        return
+
+    state.task_decomp_error = None
+    state.task_decomp_pending_instruction = None
+    state.task_decomp_input_future = _TASK_DECOMP_EXECUTOR.submit(_prompt_user_task_input)
+    print("\n🧩 [Y] Background task input started. Simulation will continue running.")
 
 
 # =============================================================================
