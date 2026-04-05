@@ -116,6 +116,10 @@ GRIPPER_CLOSE_THRESH = 0.25
 # ==========================================
 LOAD_ARM_MODEL = True
 LOAD_BASE_MODEL = True
+POLICY_SERVER_ENABLED = True
+POLICY_SERVER_HOST = "127.0.0.1"
+POLICY_SERVER_PORT = 59600
+POLICY_SERVER_AUTHKEY = "pi0_policy_server"
 
 # ==========================================
 # 🔧 Arm 模式难度选择

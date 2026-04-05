@@ -73,6 +73,10 @@ from deploy_v7_dual.config import (
     GRIPPER_CLOSE_THRESH,
     LOAD_ARM_MODEL,
     LOAD_BASE_MODEL,
+    POLICY_SERVER_ENABLED,
+    POLICY_SERVER_HOST,
+    POLICY_SERVER_PORT,
+    POLICY_SERVER_AUTHKEY,
     ARM_PILOT_RUN_MODE,
     RANDOM_INIT_ENABLED,
     RANDOM_INIT_GRIPPER_OPEN,
@@ -166,6 +170,7 @@ from mujoco_env.instruction_utils import (
 # 导入 LeRobot 和 MuJoCo 环境
 try:
     from deploy_v7_dual.policy_loader import load_policy
+    from deploy_v7_dual.policy_backends import RemotePolicyClient
     from mujoco_env.y_env7 import SimpleEnv7, EXPERT_Y_GRASP_OFFSET
     from mujoco_env.teleop import TeleopAgent
 except ImportError as e:
@@ -229,12 +234,38 @@ def main():
     base_policy = None
 
     if LOAD_ARM_MODEL:
-        arm_policy = load_policy(ARM_CONFIG, device, label='ARM', emoji='🤖')
+        if POLICY_SERVER_ENABLED:
+            arm_policy = RemotePolicyClient(
+                mode="arm",
+                host=POLICY_SERVER_HOST,
+                port=POLICY_SERVER_PORT,
+                authkey=POLICY_SERVER_AUTHKEY,
+            )
+            arm_policy.ping()
+            print(
+                "\n🧠 [ARM] Using remote policy server: "
+                f"{POLICY_SERVER_HOST}:{POLICY_SERVER_PORT}"
+            )
+        else:
+            arm_policy = load_policy(ARM_CONFIG, device, label='ARM', emoji='🤖')
     else:
         print("\n⏭️  Skipping ARM model loading (LOAD_ARM_MODEL=False)")
 
     if LOAD_BASE_MODEL:
-        base_policy = load_policy(BASE_CONFIG, device, label='BASE', emoji='🚗')
+        if POLICY_SERVER_ENABLED:
+            base_policy = RemotePolicyClient(
+                mode="base",
+                host=POLICY_SERVER_HOST,
+                port=POLICY_SERVER_PORT,
+                authkey=POLICY_SERVER_AUTHKEY,
+            )
+            base_policy.ping()
+            print(
+                "\n🧠 [BASE] Using remote policy server: "
+                f"{POLICY_SERVER_HOST}:{POLICY_SERVER_PORT}"
+            )
+        else:
+            base_policy = load_policy(BASE_CONFIG, device, label='BASE', emoji='🚗')
     else:
         print("\n⏭️  Skipping BASE model loading (LOAD_BASE_MODEL=False)")
 
@@ -502,8 +533,14 @@ def main():
                 handle_key_y(
                     state,
                     PnPEnv,
+                    arm_runner,
+                    arm_smoother,
+                    base_runner,
+                    base_postproc,
                     task_decomposer,
                     rag_navigator=rag_navigator,
+                    trace_manager=trace_manager,
+                    arm_orchestrator=arm_orchestrator,
                 )
                 handle_key_r(
                     state,
@@ -652,6 +689,10 @@ def main():
             vla_instruction_executor.shutdown(wait=False, cancel_futures=True)
         if arm_instruction_executor is not None:
             arm_instruction_executor.shutdown(wait=False, cancel_futures=True)
+        if arm_policy is not None and hasattr(arm_policy, "close"):
+            arm_policy.close()
+        if base_policy is not None and hasattr(base_policy, "close"):
+            base_policy.close()
         if PnPEnv.env.viewer:
             PnPEnv.env.close_viewer()
         print("🛑 Environment closed.")

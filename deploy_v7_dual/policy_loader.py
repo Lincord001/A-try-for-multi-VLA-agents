@@ -4,6 +4,8 @@ from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
 from lerobot.configs.types import FeatureType
 from lerobot.common.datasets.utils import dataset_to_policy_features
 
+from .policy_backends import LocalPolicyBackend
+
 
 def load_policy(config, device, label, emoji="🤖"):
     """加载 pi0 模型（ARM / BASE 通用）。"""
@@ -39,7 +41,12 @@ def load_policy(config, device, label, emoji="🤖"):
         policy.to(device)
         policy.eval()
         print(f"✅ {label} Policy Loaded Successfully!")
-        return policy
+        return LocalPolicyBackend(
+            policy=policy,
+            config=config,
+            device=device,
+            label=label,
+        )
 
     except Exception as e:
         print(f"❌ Failed to load {label} policy: {e}")

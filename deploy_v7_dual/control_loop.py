@@ -13,8 +13,6 @@ import csv
 import time
 
 import numpy as np
-import torch
-from PIL import Image
 
 from mujoco_env.instruction_utils import (
     apply_instruction_from_group as _apply_instruction_from_group,
@@ -27,7 +25,6 @@ from .config import (
     TASK_TIMEOUT_SEC,
     TASK_LOOP_COUNT,
     STEP_LOG_PATH,
-    ARM_CONFIG,
     ARM_SYNC_INFERENCE,
     ARM_EXEC_HORIZON,
     RAG_LOOKAHEAD_DIST,
@@ -323,62 +320,17 @@ def step_arm_auto(
 
     if ARM_SYNC_INFERENCE:
         # ========== 同步推理（按 chunk 执行） ==========
-        agent_img = Image.fromarray(images_dict['agent']).resize(
-            (ARM_CONFIG['image_size'], ARM_CONFIG['image_size']),
-            resample=Image.BILINEAR,
-        )
-        wrist_img = Image.fromarray(images_dict['wrist']).resize(
-            (ARM_CONFIG['image_size'], ARM_CONFIG['image_size']),
-            resample=Image.BILINEAR,
-        )
-        agent_tensor = img_transform(agent_img).unsqueeze(0).to(device)
-        wrist_tensor = img_transform(wrist_img).unsqueeze(0).to(device)
-
-        data = {
-            'observation.state': torch.tensor(
-                [robot_state], dtype=torch.float32
-            ).to(device),
-            'observation.images.agent': agent_tensor,
-            'observation.images.wrist': wrist_tensor,
-            'task': [env.instruction],
-        }
-
         need_new_chunk = state.arm_action_chunk is None
         if not need_new_chunk:
             current_horizon = min(ARM_EXEC_HORIZON, state.arm_action_chunk.shape[0])
             need_new_chunk = state.arm_chunk_step_index >= current_horizon
 
         if need_new_chunk:
-            # 不用 select_action()，避免其内部 action queue 导致"64步全消耗后才重推理"
-            with torch.no_grad():
-                batch = arm_policy.normalize_inputs(data)
-                images, img_masks = arm_policy.prepare_images(batch)
-                state_processed = arm_policy.prepare_state(batch)
-                lang_tokens, lang_masks = arm_policy.prepare_language(batch)
-
-                actions = arm_policy.model.sample_actions(
-                    images, img_masks, lang_tokens, lang_masks, state_processed
-                )
-
-                original_action_dim = arm_policy.config.action_feature.shape[0]
-                actions = actions[:, :, :original_action_dim]
-                actions = arm_policy.unnormalize_outputs({"action": actions})["action"]
-
-                if arm_policy.config.adapt_to_pi_aloha:
-                    actions = arm_policy._pi_aloha_encode_actions(actions)
-
-            action_np = actions.detach().cpu().numpy()
-            if action_np.ndim == 3:
-                chunk_np = action_np[0]
-            elif action_np.ndim == 2:
-                chunk_np = action_np
-            elif action_np.ndim == 1:
-                chunk_np = action_np[None, :]
-            else:
-                raise RuntimeError(
-                    f"Unexpected action tensor shape: {action_np.shape}"
-                )
-
+            chunk_np = arm_policy.infer_action_chunk(
+                images_dict,
+                robot_state,
+                [env.instruction],
+            )
             if chunk_np.shape[0] > 0:
                 state.arm_action_chunk = chunk_np[:, :7]
                 state.arm_chunk_step_index = 0

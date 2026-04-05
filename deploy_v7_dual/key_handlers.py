@@ -27,6 +27,13 @@ from .config import ARM_SYNC_INFERENCE
 from .task_sequence import start_task_sequence_from_file
 
 _TASK_DECOMP_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="task_decomp")
+_PRESET_TASK_DECOMP_INSTRUCTION = (
+    "First, have the mobile base transport the blue mug that is already loaded on its tray to the robotic arm workbench area. "
+    "Then have the arm place the red mug from the workbench onto the mobile base tray, and have the mobile base transport that red mug to the bedroom."
+)
+_G_PRESET_BASE_X = 0.285
+_G_PRESET_BASE_Y = 7.5
+_G_PRESET_BASE_YAW_DEG = 90.0
 
 
 def _submit_vla_retrieval(vla_instruction_rag, request_id, query, cluster_caption, target_caption, target_image_path):
@@ -40,6 +47,56 @@ def _submit_vla_retrieval(vla_instruction_rag, request_id, query, cluster_captio
     return result
 
 
+def _prepare_blue_mug_tray_scene(env) -> None:
+    env.pending_tray_init_color = "blue"
+    env.reset(
+        mode="arm",
+        preserve_instruction=True,
+        options={
+            "random_init_enabled": 0,
+            "tb3_x_random_enabled": False,
+            "tb3_x_min": float(_G_PRESET_BASE_X),
+            "tb3_x_max": float(_G_PRESET_BASE_X),
+        },
+    )
+
+    p_tray_before, R_tray_before = env.env.get_pR_body("tb3_tray")
+    p_mug_before, R_mug_before = env.env.get_pR_body("body_obj_mug_6")
+    mug_rel_p = R_tray_before.T @ (p_mug_before - p_tray_before)
+    mug_rel_R = R_tray_before.T @ R_mug_before
+
+    env.set_base_pose(
+        float(_G_PRESET_BASE_X),
+        float(_G_PRESET_BASE_Y),
+        np.deg2rad(float(_G_PRESET_BASE_YAW_DEG)),
+        z=0.0,
+    )
+
+    p_tray_after, R_tray_after = env.env.get_pR_body("tb3_tray")
+    p_mug_after = p_tray_after + R_tray_after @ mug_rel_p
+    R_mug_after = R_tray_after @ mug_rel_R
+    env.env.set_p_base_body("body_obj_mug_6", p_mug_after, forward=False)
+    env.env.set_R_base_body("body_obj_mug_6", R_mug_after)
+
+    support_body_name = env.tray_support_body_names.get("body_obj_mug_6")
+    if support_body_name:
+        env._set_tray_support_local_pos(
+            support_body_name,
+            np.array([mug_rel_p[0], mug_rel_p[1], 0.0], dtype=np.float64),
+            forward=False,
+        )
+        env.tray_support_active["body_obj_mug_6"] = True
+        env.env.forward(increase_tick=False)
+
+    for _ in range(20):
+        env.step_env()
+
+    try:
+        env.grab_image()
+    except Exception:
+        pass
+
+
 def _prompt_user_task_input() -> str:
     print("\n📝 [Y] Enter your natural-language user task:")
     return input("   > ").strip()
@@ -51,6 +108,56 @@ def _submit_task_decomposition(task_decomposer, user_instruction: str, agent_ima
         agent_image_path=agent_image_path,
         navigation_context=navigation_context,
     )
+
+
+def _reset_task_decomposition_session(
+    state: DeployState,
+    base_runner,
+    base_postproc,
+    arm_runner,
+    arm_smoother,
+    trace_manager=None,
+    arm_orchestrator=None,
+) -> bool:
+    input_future = state.task_decomp_input_future
+    if input_future is not None:
+        if not input_future.done() and not input_future.cancel():
+            print("\n⚠️ [Y] Cannot interrupt task input while the terminal input thread is still waiting.")
+            return False
+        state.task_decomp_input_future = None
+
+    decomp_future = state.task_decomp_future
+    if decomp_future is not None:
+        if not decomp_future.done() and not decomp_future.cancel():
+            print("\n⚠️ [Y] Cannot interrupt task decomposition while the background worker is still running.")
+            return False
+        state.task_decomp_future = None
+
+    if state.task_sequence_active:
+        state.stop_task_sequence("manual_key_y_restart")
+
+    if trace_manager is not None:
+        trace_manager.stop_arm_episode(reason="manual_key_y_restart")
+        trace_manager.stop_base_episode(reason="manual_key_y_restart")
+    if arm_orchestrator is not None:
+        arm_orchestrator.on_auto_stop("manual_key_y_restart")
+
+    state.deactivate_arm_auto(
+        arm_runner,
+        arm_smoother,
+        disable_auto_check=True,
+        reset_runner_state=True,
+    )
+    state.deactivate_base_auto(
+        base_runner,
+        base_postproc,
+        reset_runner_state=True,
+    )
+    state.stop_navigation()
+    state.rag_vla_handoff_waiting = False
+    state.task_decomp_pending_instruction = None
+    state.task_decomp_error = None
+    return True
 
 
 def process_pending_vla_retrieval(state: DeployState):
@@ -508,8 +615,17 @@ def handle_key_g(state: DeployState, env):
     if not env.env.is_key_pressed_once(key=glfw.KEY_G):
         return
 
-    print("\n🚀 [G] Teleporting base and cup to (4.25, 3.5, 0) yaw=57.1")
-    env.teleport_base_and_cups(4.25, 3.5, 0.0, -57.1)
+    state.stop_task_sequence("manual_key_g_scene_preset")
+    _prepare_blue_mug_tray_scene(env)
+    state.control_mode = "arm"
+    env.control_mode = "arm"
+    state.step = 0
+    state.task_decomp_pending_instruction = None
+    state.task_decomp_error = None
+    print(
+        "\n🚀 [G] Scene preset ready: blue mug loaded on tray, "
+        f"base reset to x={_G_PRESET_BASE_X:.3f}, y={_G_PRESET_BASE_Y:.3f}, yaw={_G_PRESET_BASE_YAW_DEG:.1f}°."
+    )
 
 
 # =============================================================================
@@ -655,8 +771,14 @@ def handle_key_p(state: DeployState, env, task_sequence_json: str):
 def handle_key_y(
     state: DeployState,
     env,
+    arm_runner,
+    arm_smoother,
+    base_runner,
+    base_postproc,
     task_decomposer,
     rag_navigator=None,
+    trace_manager=None,
+    arm_orchestrator=None,
 ):
     if not env.env.is_key_pressed_once(key=glfw.KEY_Y):
         return
@@ -665,14 +787,35 @@ def handle_key_y(
         print("\n⚠️ [Y] Task decomposer unavailable.")
         return
 
-    if state.task_decomp_input_future is not None or state.task_decomp_future is not None:
-        print("\nℹ️ [Y] Task decomposition already in progress.")
-        return
+    has_active_task_session = (
+        state.task_decomp_input_future is not None
+        or state.task_decomp_future is not None
+        or state.task_decomp_pending_instruction is not None
+        or state.task_sequence_active
+        or state.auto_mode_arm
+        or state.auto_mode_base
+        or state.nav_mode_active
+    )
+
+    if has_active_task_session:
+        stopped = _reset_task_decomposition_session(
+            state,
+            base_runner=base_runner,
+            base_postproc=base_postproc,
+            arm_runner=arm_runner,
+            arm_smoother=arm_smoother,
+            trace_manager=trace_manager,
+            arm_orchestrator=arm_orchestrator,
+        )
+        if not stopped:
+            return
+        print("\n🔄 [Y] Previous task session stopped. Starting a new preset task session.")
 
     state.task_decomp_error = None
-    state.task_decomp_pending_instruction = None
-    state.task_decomp_input_future = _TASK_DECOMP_EXECUTOR.submit(_prompt_user_task_input)
-    print("\n🧩 [Y] Background task input started. Simulation will continue running.")
+    state.task_decomp_input_future = None
+    state.task_decomp_pending_instruction = _PRESET_TASK_DECOMP_INSTRUCTION
+    print("\n🧩 [Y] Preset user task queued for decomposition:")
+    print(f"   {_PRESET_TASK_DECOMP_INSTRUCTION}")
 
 
 # =============================================================================

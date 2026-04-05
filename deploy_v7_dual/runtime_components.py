@@ -2,8 +2,6 @@ import threading
 import time
 
 import numpy as np
-import torch
-from PIL import Image
 from torchvision import transforms
 
 
@@ -373,85 +371,7 @@ class AsyncInferenceRunner:
 
             t_inference_start = time.perf_counter()
             try:
-                t0 = time.perf_counter()
-                resized_images = {
-                    key: Image.fromarray(raw_images[key]).resize(
-                        (self.image_size, self.image_size),
-                        resample=Image.BILINEAR,
-                    )
-                    for key in self.camera_keys
-                }
-                t1 = time.perf_counter()
-                if self.perf_monitor:
-                    self.perf_monitor.record_inference("img_resize", t1 - t0)
-
-                t0 = time.perf_counter()
-                image_tensors = {
-                    key: self.img_transform(img).unsqueeze(0) for key, img in resized_images.items()
-                }
-                t1 = time.perf_counter()
-                if self.perf_monitor:
-                    self.perf_monitor.record_inference("img_totensor", t1 - t0)
-
-                t0 = time.perf_counter()
-                image_tensors = {key: tensor.to(self.device) for key, tensor in image_tensors.items()}
-                state_tensor = torch.tensor(np.array(state, dtype=np.float32)).unsqueeze(0).to(self.device)
-                t1 = time.perf_counter()
-                if self.perf_monitor:
-                    self.perf_monitor.record_inference("img_todevice", t1 - t0)
-
-                batch = {
-                    "observation.state": state_tensor,
-                    "task": task,
-                }
-                for key, tensor in image_tensors.items():
-                    batch[f"observation.images.{key}"] = tensor
-
-                with torch.no_grad():
-                    t0 = time.perf_counter()
-                    batch = self.policy.normalize_inputs(batch)
-                    t1 = time.perf_counter()
-                    if self.perf_monitor:
-                        self.perf_monitor.record_inference("normalize_inputs", t1 - t0)
-
-                    t0 = time.perf_counter()
-                    images, img_masks = self.policy.prepare_images(batch)
-                    t1 = time.perf_counter()
-                    if self.perf_monitor:
-                        self.perf_monitor.record_inference("prepare_images", t1 - t0)
-
-                    t0 = time.perf_counter()
-                    state_processed = self.policy.prepare_state(batch)
-                    t1 = time.perf_counter()
-                    if self.perf_monitor:
-                        self.perf_monitor.record_inference("prepare_state", t1 - t0)
-
-                    t0 = time.perf_counter()
-                    lang_tokens, lang_masks = self.policy.prepare_language(batch)
-                    t1 = time.perf_counter()
-                    if self.perf_monitor:
-                        self.perf_monitor.record_inference("prepare_language", t1 - t0)
-
-                    t0 = time.perf_counter()
-                    actions = self.policy.model.sample_actions(
-                        images, img_masks, lang_tokens, lang_masks, state_processed
-                    )
-                    t1 = time.perf_counter()
-                    if self.perf_monitor:
-                        self.perf_monitor.record_inference("sample_actions", t1 - t0)
-
-                    t0 = time.perf_counter()
-                    original_action_dim = self.policy.config.action_feature.shape[0]
-                    actions = actions[:, :, :original_action_dim]
-                    actions = self.policy.unnormalize_outputs({"action": actions})["action"]
-
-                    if self.policy.config.adapt_to_pi_aloha:
-                        actions = self.policy._pi_aloha_encode_actions(actions)
-                    t1 = time.perf_counter()
-                    if self.perf_monitor:
-                        self.perf_monitor.record_inference("postprocess", t1 - t0)
-
-                chunk_np = actions[0].cpu().numpy()
+                chunk_np = self.policy.infer_action_chunk(raw_images, state, task)
                 t_inference_end = time.perf_counter()
                 if self.perf_monitor:
                     self.perf_monitor.record_inference(

@@ -558,7 +558,8 @@ class DashScopeTaskDecompositionBackend:
             "4. Use ambiguous_argument only when the current scene truly contains multiple candidates that must be distinguished and the step requires a unique target.\n"
             "5. For cross-region transport tasks, the arm usually handles workbench-side pick, load-to-tray, or other tabletop pick/place actions. Do not mark an arm step out of scope just because the overall task ends in another room.\n"
             "6. The current arm instruction catalog is both a capability example and a normalization reference, not an exhaustive list of all valid surface forms. If the step is a legal workbench tabletop action, you may mark it feasible and return a normalized_query, leaving exact normalization to later query/instruction matching.\n"
-            "7. The input image is only a local agent_view near the arm. It may not show distant or occluded tray contents. Therefore, do not mark scene_precondition_failed merely because a tray object is not directly visible in the current image when the main precondition comes from task context.\n"
+            "7. If the arm subtask already explicitly specifies an object attribute such as color, identity, count, or source/destination relation, normalized_query must preserve that explicit attribute. Do not replace a specified color with a different color. Do not drop a specified color. Do not add a different specific object instance when the clause already names one.\n"
+            "8. The input image is only a local agent_view near the arm. It may not show distant or occluded tray contents. Therefore, do not mark scene_precondition_failed merely because a tray object is not directly visible in the current image when the main precondition comes from task context.\n"
             "Output results in the original order. The number of items in results must exactly match the input.\n"
             "Output JSON only. Do not output any extra text.\n"
             "JSON schema:\n"
@@ -983,10 +984,7 @@ class TaskDecomposer:
         feasible = all(e.feasible for e in evaluations)
         diagnostics = [self._diagnostic_from_evaluation(e) for e in evaluations]
         normalized_tasks = (
-            self._expand_normalized_tasks(
-                evaluations=evaluations,
-                navigation_context=navigation_context,
-            )
+            [dict(e.normalized_task) for e in evaluations if e.normalized_task]
             if feasible
             else []
         )
