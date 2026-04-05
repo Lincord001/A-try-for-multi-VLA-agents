@@ -122,6 +122,12 @@ class DeployState:
     task_sequence_arm_query_results: dict = dataclasses.field(default_factory=dict)
     task_sequence_arm_return_home_active: bool = False
     task_sequence_arm_post_home_result: Optional[dict] = None
+    task_replanner_enabled: bool = False
+    task_replanner_auto_apply: bool = False
+    task_replanner: Optional[Any] = None
+    task_replanner_max_new_tasks: int = 5
+    task_replan_last_result: Optional[dict] = None
+    task_replan_last_error: Optional[str] = None
 
     # ---------- 自动重置选项（从 config 读取，主程序初始化后传入） ----------
     auto_reset_options: dict = dataclasses.field(default_factory=lambda: {
@@ -256,6 +262,8 @@ class DeployState:
         self.task_sequence_arm_query_results = {}
         self.task_sequence_arm_return_home_active = False
         self.task_sequence_arm_post_home_result = None
+        self.task_replan_last_result = None
+        self.task_replan_last_error = None
 
     def stop_task_sequence(self, reason: str):
         """停止串行任务队列。"""

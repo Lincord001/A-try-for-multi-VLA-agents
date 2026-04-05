@@ -116,6 +116,10 @@ from deploy_v7_dual.config import (
     TASK_DECOMPOSER_NAV_TOP_K,
     TASK_DECOMPOSER_EMBEDDING_MODEL,
     TASK_DECOMPOSER_STREAM_OUTPUT,
+    TASK_REPLANNER_ENABLED,
+    TASK_REPLANNER_AUTO_APPLY,
+    TASK_REPLANNER_MODEL,
+    TASK_REPLANNER_MAX_NEW_TASKS,
 )
 from deploy_v7_dual.runtime_components import (
     ActionSmoother,
@@ -160,6 +164,7 @@ from deploy_v7_dual.execution_trace_manager import ExecutionTraceManager
 from deploy_v7_dual.arm_vlm_orchestrator import ArmVLMOrchestrator
 from deploy_v7_dual.task_sequence import advance_task_sequence
 from orchestration.task_decomposer import TaskDecomposer, DashScopeTaskDecompositionBackend
+from orchestration.task_replanner import TaskReplanner, DashScopeTaskReplanningBackend
 
 from mujoco_env.instruction_utils import (
     INSTRUCTION_GROUPS,
@@ -474,6 +479,7 @@ def main():
     except Exception as e:
         print(f"⚠️ [ARM-RAG] Instruction retriever init failed, arm query normalization disabled: {e}")
     task_decomposer = None
+    task_replanner = None
     if TASK_DECOMPOSER_ENABLED:
         try:
             task_decomposer = TaskDecomposer(
@@ -488,6 +494,20 @@ def main():
             print("🧩 [TASK-DECOMP] Task decomposer loaded.")
         except Exception as e:
             print(f"⚠️ [TASK-DECOMP] Task decomposer init failed: {e}")
+    if TASK_REPLANNER_ENABLED:
+        try:
+            task_replanner = TaskReplanner(
+                backend=DashScopeTaskReplanningBackend(
+                    model=TASK_REPLANNER_MODEL,
+                ),
+            )
+            print("🔁 [TASK-REPLAN] Task replanner loaded.")
+        except Exception as e:
+            print(f"⚠️ [TASK-REPLAN] Task replanner init failed: {e}")
+    state.task_replanner_enabled = bool(TASK_REPLANNER_ENABLED and task_replanner is not None)
+    state.task_replanner_auto_apply = bool(TASK_REPLANNER_AUTO_APPLY)
+    state.task_replanner = task_replanner
+    state.task_replanner_max_new_tasks = int(TASK_REPLANNER_MAX_NEW_TASKS)
 
     try:
         while PnPEnv.env.is_viewer_alive():

@@ -12,9 +12,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tempfile
 from typing import Any
 
 import numpy as np
+from PIL import Image
+
+from orchestration.task_decomposer import build_navigation_scene_context
+from orchestration.task_replanner import RuntimeObservationImage
 
 
 def _submit_vla_retrieval(vla_instruction_rag, request_id, query, cluster_caption, target_caption, target_image_path):
@@ -144,7 +149,20 @@ def advance_task_sequence(
             f"{task_name} finished: status={result.get('status')} "
             f"| reason={result.get('reason')}"
         )
-        state.task_sequence_index += 1
+        replan_applied = _maybe_generate_replan_suggestion(
+            state=state,
+            env=env,
+            task=dict(task),
+            result=result,
+            rag_navigator=rag_navigator,
+        )
+        if replan_applied:
+            print(
+                "\n🔁 [TASK QUEUE] Replanned queue auto-applied. "
+                f"next_index={state.task_sequence_index + 1}/{len(state.task_sequence_tasks)}"
+            )
+        else:
+            state.task_sequence_index += 1
         state.task_sequence_started = False
         state.task_sequence_pending_result = None
 
@@ -192,8 +210,163 @@ def advance_task_sequence(
     except Exception as exc:
         task_name = str(task.get("name", f"task_{state.task_sequence_index + 1}"))
         print(f"\n❌ [TASK QUEUE] Failed to start {task_name}: {exc}")
+        replan_applied = _maybe_generate_replan_suggestion(
+            state=state,
+            env=env,
+            task=dict(task),
+            result={
+                "status": "failed",
+                "reason": "task_start_failure",
+                "error": str(exc),
+            },
+            rag_navigator=rag_navigator,
+        )
+        if replan_applied:
+            state.task_sequence_started = False
+            state.task_sequence_pending_result = None
+            return False
         state.stop_task_sequence(reason=f"start_failure:{task_name}")
     return False
+
+
+def _maybe_generate_replan_suggestion(
+    *,
+    state,
+    env,
+    task: dict[str, Any],
+    result: dict[str, Any],
+    rag_navigator=None,
+) -> bool:
+    if not bool(getattr(state, "task_replanner_enabled", False)):
+        return False
+    replanner = getattr(state, "task_replanner", None)
+    if replanner is None:
+        return False
+
+    status = str(result.get("status", "")).strip().lower()
+    if status not in {"failed", "timeout"}:
+        return False
+
+    try:
+        observation_images = _capture_replan_observation_images(env, executor=str(task.get("executor", "")))
+        navigation_context = _build_replan_navigation_context(env, rag_navigator=rag_navigator)
+        current_index = int(state.task_sequence_index)
+        original_plan = [dict(item) for item in state.task_sequence_tasks]
+        completed_tasks = [dict(item) for item in state.task_sequence_tasks[:current_index]]
+        remaining_tasks = [dict(item) for item in state.task_sequence_tasks[current_index + 1 :]]
+        observation_text = (
+            f"queue_index={current_index} "
+            f"task_name={task.get('name', '')} "
+            f"executor={task.get('executor', '')} "
+            f"failure_status={result.get('status', '')} "
+            f"failure_reason={result.get('reason', '')}"
+        )
+        request = replanner.build_request(
+            original_user_instruction=str(getattr(state, "task_sequence_source_path", "") or "[task_queue]").strip(),
+            original_plan=original_plan,
+            failed_task=dict(task),
+            failure_result=dict(result),
+            completed_tasks=completed_tasks,
+            remaining_tasks=remaining_tasks,
+            task_queue_results=[dict(item) for item in state.task_sequence_results],
+            observation_images=observation_images,
+            observation_text=observation_text,
+            observation_extra_state={
+                "control_mode": getattr(state, "control_mode", ""),
+                "task_sequence_started": bool(getattr(state, "task_sequence_started", False)),
+                "nav_mode_active": bool(getattr(state, "nav_mode_active", False)),
+            },
+            semantic_candidates=navigation_context.get("candidate_regions", []),
+            max_new_tasks=int(getattr(state, "task_replanner_max_new_tasks", 5)),
+        )
+        if navigation_context:
+            request.observation.current_region = dict(navigation_context.get("current_region", {}))
+            pose_text = str(navigation_context.get("current_pose_text", "")).strip()
+            if pose_text:
+                request.observation.textual_state = (
+                    f"{request.observation.textual_state}\n{pose_text}".strip()
+                )
+
+        replan_result = replanner.replan_failed_task(request)
+        state.task_replan_last_result = {
+            "failed_task_name": str(task.get("name", "")),
+            "failed_task_executor": str(task.get("executor", "")),
+            "failed_status": str(result.get("status", "")),
+            "failed_reason": str(result.get("reason", "")),
+            "feasible": bool(replan_result.feasible),
+            "failure_mode": str(replan_result.failure_mode),
+            "rationale": str(replan_result.rationale),
+            "replacement_tasks": [dict(item) for item in replan_result.replacement_tasks],
+            "merged_plan": [dict(item) for item in replan_result.merged_plan],
+        }
+        state.task_replan_last_error = None
+        print(
+            "\n🔁 [TASK-REPLAN] Suggestion ready: "
+            f"feasible={replan_result.feasible} "
+            f"| failure_mode={replan_result.failure_mode} "
+            f"| replacement_tasks={len(replan_result.replacement_tasks)}"
+        )
+        if replan_result.rationale:
+            print(f"   rationale: {replan_result.rationale}")
+        if bool(getattr(state, "task_replanner_auto_apply", False)) and replan_result.feasible:
+            state.task_sequence_tasks = [dict(item) for item in replan_result.merged_plan]
+            state.task_sequence_index = len(completed_tasks)
+            print(
+                "\n🔁 [TASK-REPLAN] Auto-applied merged plan: "
+                f"tasks={len(state.task_sequence_tasks)} "
+                f"| resume_from={state.task_sequence_index + 1}"
+            )
+            return True
+        return False
+    except Exception as exc:
+        state.task_replan_last_result = None
+        state.task_replan_last_error = str(exc)
+        print(f"\n⚠️ [TASK-REPLAN] Suggestion generation failed: {exc}")
+        return False
+
+
+def _capture_replan_observation_images(env, *, executor: str) -> list[RuntimeObservationImage]:
+    images = env.grab_image()
+    if not isinstance(images, dict):
+        return []
+
+    preferred_keys = ["agent", "wrist"] if str(executor).strip().lower() == "arm" else ["front", "left", "right"]
+    captured: list[RuntimeObservationImage] = []
+    output_dir = Path(tempfile.gettempdir()) / "task_replanner_images"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for key in preferred_keys:
+        array = images.get(key)
+        if array is None:
+            continue
+        np_array = np.asarray(array)
+        if np_array.ndim != 3 or np_array.shape[2] not in (3, 4):
+            continue
+        if np_array.dtype != np.uint8:
+            np_array = np.clip(np_array, 0, 255).astype(np.uint8)
+        image = Image.fromarray(np_array[:, :, :3])
+        output_path = output_dir / f"task_replanner_{executor}_{key}.png"
+        image.save(output_path)
+        captured.append(
+            RuntimeObservationImage(
+                label=str(key),
+                image_path=str(output_path.resolve()),
+                note=f"{executor}_view_{key}",
+            )
+        )
+    return captured
+
+
+def _build_replan_navigation_context(env, *, rag_navigator=None) -> dict[str, Any]:
+    if rag_navigator is None:
+        return {}
+    p_tb3, R_tb3 = env.env.get_pR_body("tb3_base")
+    yaw = float(np.arctan2(float(R_tb3[1, 0]), float(R_tb3[0, 0])))
+    current_pose = np.array([float(p_tb3[0]), float(p_tb3[1]), yaw], dtype=np.float64)
+    return build_navigation_scene_context(
+        current_pose=current_pose,
+        rag_navigator=rag_navigator,
+    ).to_dict()
 
 
 def _stop_all_execution_modes(
