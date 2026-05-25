@@ -2,6 +2,10 @@ import sys
 import numpy as np
 import torch
 import time
+from _script_paths import ensure_repo_root_on_syspath, resolve_repo_path
+
+ensure_repo_root_on_syspath()
+
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from mujoco_env.y_env4 import SimpleEnv4
 from mujoco_env.y_env6 import SimpleEnv6
@@ -22,26 +26,26 @@ DATASET_CONFIG = {
     'base': {
         'v6': {
             'repo_name': 'demo_data_base_v6',
-            'root': './demo_data_base_v6',
+            'root': str(resolve_repo_path('./demo_data_base_v6')),
             'image_keys': ['front', 'left', 'right'],  # 底盘模式的相机
             'env_backend': 'y6',
-            'xml_path': './asset/example_scene_y6.xml',
+            'xml_path': str(resolve_repo_path('./asset/example_scene_y6.xml')),
         }
     },
     'arm': {
         'v5': {
             'repo_name': 'demo_data_arm_v5',
-            'root': './demo_data_arm_v5',
+            'root': str(resolve_repo_path('./demo_data_arm_v5')),
             'image_keys': ['agent', 'wrist'],  # 机械臂模式的相机
             'env_backend': 'y4',
-            'xml_path': './asset/example_scene_y4.xml',
+            'xml_path': str(resolve_repo_path('./asset/example_scene_y4.xml')),
         },
         'v6': {
             'repo_name': 'demo_data_arm_v6',
-            'root': './demo_data_arm_v6',
+            'root': str(resolve_repo_path('./demo_data_arm_v6')),
             'image_keys': ['agent', 'wrist'],  # 与 v5 保持一致
             'env_backend': 'y6',
-            'xml_path': './asset/example_scene_y6.xml',
+            'xml_path': str(resolve_repo_path('./asset/example_scene_y6.xml')),
         },
     }
 }

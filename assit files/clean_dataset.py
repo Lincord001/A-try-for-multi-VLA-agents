@@ -6,15 +6,17 @@ import numpy as np
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from tqdm import tqdm
 
+from _script_paths import resolve_repo_path
+
 # Silence noisy HF progress bars.
 datasets.disable_progress_bar()
 
 # ================= Config =================
 SOURCE_REPO = "omy_base_data_RAG"
-SOURCE_ROOT = "./demo_data_base_RAG"
+SOURCE_ROOT = str(resolve_repo_path("./demo_data_base_RAG"))
 
 TARGET_REPO = "omy_base_data_RAG_clean"
-TARGET_ROOT = "./demo_data_base_RAG_clean"
+TARGET_ROOT = str(resolve_repo_path("./demo_data_base_RAG_clean"))
 
 # Episodes to remove (0-based episode_index).
 BLACKLIST_EPISODES = [0]

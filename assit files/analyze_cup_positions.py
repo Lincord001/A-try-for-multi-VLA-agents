@@ -18,8 +18,10 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import json
 
+from _script_paths import resolve_repo_path
+
 # 配置
-DATASET_ROOT = './demo_data_arm_v5_2'
+DATASET_ROOT = resolve_repo_path("./demo_data_arm_v5_2")
 EXPERT_Y_GRASP_OFFSET = 0.067  # 从 y_env4.py 中获取
 
 def load_episode_tasks(meta_path):
@@ -526,7 +528,7 @@ def analyze_cup_positions():
     plt.tight_layout()
     
     # 确保输出目录存在
-    output_dir = Path('cup_position')
+    output_dir = resolve_repo_path("cup_position")
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # 保存图片

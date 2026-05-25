@@ -1,10 +1,11 @@
+from _script_paths import resolve_repo_path
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.common.datasets.utils import dataset_to_policy_features
 from lerobot.common.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.configs.types import FeatureType
 
 # 1. 指向你包含 base_pose 的新数据集目录
-ROOT = "./demo_data_arm_v4" 
+ROOT = str(resolve_repo_path("./demo_data_arm_v4"))
 REPO_NAME = "omy_arm_data_v4"
 
 try:

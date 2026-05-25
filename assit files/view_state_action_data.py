@@ -9,6 +9,8 @@ import numpy as np
 import sys
 import os
 
+from _script_paths import resolve_repo_path
+
 def view_state_data(parquet_path):
     """
     读取并显示 parquet 文件中的 state 和 action 数据（前30帧）
@@ -70,10 +72,10 @@ def view_state_data(parquet_path):
 
 if __name__ == "__main__":
     # 默认路径
-    default_path = "demo_data_arm_v4/data/chunk-000/episode_000451.parquet"
+    default_path = str(resolve_repo_path("demo_data_arm_v4/data/chunk-000/episode_000451.parquet"))
     
     if len(sys.argv) > 1:
-        parquet_path = sys.argv[1]
+        parquet_path = str(resolve_repo_path(sys.argv[1]))
     else:
         parquet_path = default_path
     

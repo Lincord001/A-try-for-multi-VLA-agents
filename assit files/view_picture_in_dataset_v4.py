@@ -8,45 +8,52 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import TextBox
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
+from _script_paths import resolve_repo_path
+
 # ================= 配置区域 =================
 # 支持 mode + version 选择，和 visualize_dataset.py 保持一致风格
 DATASET_CONFIG = {
     "base": {
         "v4": {
             "repo_name": "demo_data_base_v4",
-            "root": "./demo_data_base_v4",
+            "root": str(resolve_repo_path("./demo_data_base_v4")),
             "image_keys": ["front", "left", "right"],
         },
         "v6": {
             "repo_name": "omy_base_data_v6",
-            "root": "./demo_data_base_v6",
+            "root": str(resolve_repo_path("./demo_data_base_v6")),
             "image_keys": ["front", "left", "right"],
         },
         "v7": {
             "repo_name": "omy_base_data_v7_5",
-            "root": "./demo_data_base_v7_5",
+            "root": str(resolve_repo_path("./demo_data_base_v7_5")),
+            "image_keys": ["front", "left", "right"],
+        },
+        "v7_6": {
+            "repo_name": "omy_base_data_v7_6",
+            "root": "/home/pengguanqi/workspace/MuJoCo/backup_lerobot-mujoco-tutorial/demo_data_base_v7_6",
             "image_keys": ["front", "left", "right"],
         },
     },
     "arm": {
         "v5": {
             "repo_name": "demo_data_arm_v5",
-            "root": "./demo_data_arm_v5",
+            "root": str(resolve_repo_path("./demo_data_arm_v5")),
             "image_keys": ["agent", "wrist"],
         },
         "v5_3": {
             "repo_name": "omy_arm_data_v5_3",
-            "root": "./demo_data_arm_v5_3",
+            "root": str(resolve_repo_path("./demo_data_arm_v5_3")),
             "image_keys": ["agent", "wrist"],
         },
         "v6": {
             "repo_name": "omy_arm_data_v6_1",
-            "root": "./demo_data_arm_v6_1",
+            "root": str(resolve_repo_path("./demo_data_arm_v6_1")),
             "image_keys": ["agent", "wrist"],
         },
                 "v7": {
             "repo_name": "omy_arm_data_v7_1",
-            "root": "./demo_data_arm_v7_1",
+            "root": str(resolve_repo_path("./demo_data_arm_v7_1")),
             "image_keys": ["agent", "wrist"],
         },
     },
@@ -56,7 +63,7 @@ DATASET_CONFIG = {
 def resolve_dataset_path(mode, version, data_dir):
     """优先使用 data_dir；否则按 mode/version 从配置中解析路径。"""
     if data_dir:
-        return data_dir, None
+        return str(resolve_repo_path(data_dir)), None
 
     mode_cfg = DATASET_CONFIG.get(mode)
     if mode_cfg is None:
@@ -483,12 +490,12 @@ if __name__ == "__main__":
         "--version",
         type=str,
         default="v7",
-        help="数据集版本 (例如: arm 的 v5/v5_3/v6，base 的 v4/v6)",
+        help="数据集版本 (例如: arm 的 v5/v5_3/v6，base 的 v4/v6/v7/v7_6)",
     )
     parser.add_argument(
         "--data_dir",
         type=str,
-        default=None,
+        default="/home/pengguanqi/workspace/MuJoCo/backup_lerobot-mujoco-tutorial/demo_data_arm_v7_1",
         help="数据集根目录路径；若不填则按 mode/version 自动解析",
     )
     parser.add_argument(

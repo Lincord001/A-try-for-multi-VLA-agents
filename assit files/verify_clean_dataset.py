@@ -2,8 +2,10 @@
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 import numpy as np
 
+from _script_paths import resolve_repo_path
+
 REPO_NAME = 'omy_base_data_clean'
-ROOT = './demo_data_base_ver_2_clean'
+ROOT = str(resolve_repo_path("./demo_data_base_ver_2_clean"))
 
 print("=" * 60)
 print("Verifying cleaned dataset")
@@ -67,7 +69,7 @@ try:
     # 7. Compare with original dataset (if exists)
     print(f"\n7. Comparison with original dataset:")
     try:
-        ds_orig = LeRobotDataset('omy_base_data', root='./demo_data_base')
+        ds_orig = LeRobotDataset('omy_base_data', root=str(resolve_repo_path("./demo_data_base")))
         print(f"   Original dataset: {ds_orig.num_episodes} episodes, {ds_orig.num_frames} frames")
         print(f"   Cleaned dataset: {dataset.num_episodes} episodes, {dataset.num_frames} frames")
         print(f"   Removed episodes: [1, 4] (according to BLACKLIST_EPISODES)")

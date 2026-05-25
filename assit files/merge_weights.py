@@ -2,8 +2,10 @@ import os
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm  # 如果没有 tqdm 可以去掉，只是为了好看进度条
 
+from _script_paths import resolve_repo_path
+
 # 你的权重目录
-model_dir = "./PaliGemmaWeights/paligemma-3b-pt-224"
+model_dir = str(resolve_repo_path("./PaliGemmaWeights/paligemma-3b-pt-224"))
 output_path = os.path.join(model_dir, "model.safetensors")
 
 # 定义分片文件列表

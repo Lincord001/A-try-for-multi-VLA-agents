@@ -1,5 +1,7 @@
 import os
 
+from _script_paths import resolve_repo_path
+
 print("Setting up environment variables for Hugging Face...")
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 os.environ['HUGGINGFACE_HUB_ENDPOINT'] = 'https://hf-mirror.com'
@@ -26,7 +28,7 @@ def inspect_checkpoint(path_name, policy_path):
         # 准备元数据 (为了加载 stats)
         # 注意：如果您修改了数据集路径，请在这里对应修改
         try:
-            dataset_metadata = LeRobotDatasetMetadata("omy_base_data", root='./demo_data_base')
+            dataset_metadata = LeRobotDatasetMetadata("omy_base_data", root=str(resolve_repo_path("./demo_data_base")))
         except:
             print("⚠️ 警告: 找不到本地数据集，尝试使用默认 stats 初始化...")
             dataset_metadata = None
@@ -107,12 +109,12 @@ if __name__ == "__main__":
     print("🔍 开始模型取证分析...")
     
     # 1. 检查您当前使用的路径 (嫌疑最大的路径)
-    current_path = './ckpt/pi0_base/pretrained_model'
+    current_path = str(resolve_repo_path("./ckpt/pi0_base/pretrained_model"))
     inspect_checkpoint("当前使用路径 (pretrained_model)", current_path)
     
     # 2. 检查 Checkpoints 目录 (寻找真正的训练结果)
     # 扫描 ckpt/pi0_base/checkpoints 目录下的所有文件夹
-    ckpt_root = './ckpt/pi0_base/checkpoints'
+    ckpt_root = str(resolve_repo_path("./ckpt/pi0_base/checkpoints"))
     if os.path.exists(ckpt_root):
         subdirs = sorted([d for d in os.listdir(ckpt_root) if d.isdigit()], key=lambda x: int(x))
         if subdirs:

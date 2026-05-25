@@ -603,11 +603,21 @@ def main():
                     if arm_orchestrator.enabled and arm_orchestrator.recovery_active:
                         recovery_done = step_arm_recovery(state, PnPEnv, arm_orchestrator)
                         if recovery_done:
+                            state.control_mode = 'arm'
+                            PnPEnv.control_mode = 'arm'
+                            state.auto_mode_arm = True
+                            state.arm_vlm_pause_active = False
                             arm_orchestrator.finalize_recovery_handoff(
                                 PnPEnv,
                                 arm_policy,
                                 arm_runner,
                                 arm_smoother,
+                            )
+                            print(
+                                "[ARM-VLM] Post-recovery execution gates: "
+                                f"control_mode={state.control_mode} "
+                                f"auto_mode_arm={state.auto_mode_arm} "
+                                f"arm_policy_ready={arm_policy is not None}"
                             )
                     elif state.arm_vlm_pause_active and arm_orchestrator.enabled:
                         arm_event = arm_orchestrator.process_pending_check()

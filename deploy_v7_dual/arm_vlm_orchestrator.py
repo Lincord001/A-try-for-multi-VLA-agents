@@ -345,14 +345,34 @@ class ArmVLMOrchestrator:
         if arm_policy is not None:
             arm_policy.reset()
         if arm_runner is not None:
-            arm_runner.reset_state()
+            if hasattr(arm_runner, "running") and not bool(getattr(arm_runner, "running", False)):
+                arm_runner.start()
+            else:
+                arm_runner.reset_state()
         current_state = np.asarray(env.get_joint_state(), dtype=np.float64).reshape(-1)
         arm_smoother.reset()
         arm_smoother.prime_from_state(current_state)
         self.resume_warmup_steps_remaining = int(max(ARM_VLM_HANDOFF_WARMUP_STEPS, 0))
+        runner_status = (
+            arm_runner.debug_status()
+            if arm_runner is not None and hasattr(arm_runner, "debug_status")
+            else {
+                "running": bool(getattr(arm_runner, "running", False)) if arm_runner is not None else False,
+                "has_chunk": False,
+                "chunk_len": 0,
+                "current_step_index": 0,
+            }
+        )
         print(
             "\n[ARM-VLM] Recovery handoff complete: "
             "ARM policy/runner reset, auto control will resume on the next control tick."
+        )
+        print(
+            "[ARM-VLM] Post-recovery runner state: "
+            f"running={runner_status.get('running')} "
+            f"has_chunk={runner_status.get('has_chunk')} "
+            f"chunk_len={runner_status.get('chunk_len')} "
+            f"step_index={runner_status.get('current_step_index')}"
         )
 
     def limit_resume_action(self, action_step, robot_state):

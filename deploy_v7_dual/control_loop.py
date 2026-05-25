@@ -312,6 +312,9 @@ def step_arm_auto(
     arm_orchestrator=None,
 ):
     """ARM 自动控制模式：推理一步并执行动作。"""
+    if not hasattr(state, "_arm_resume_wait_logged"):
+        state._arm_resume_wait_logged = False
+
     # 1. 收集观测数据
     robot_state = env.get_joint_state()   # (7,) 包含夹爪状态
     images_dict = env.grab_image()        # {'agent', 'wrist'}
@@ -352,11 +355,31 @@ def step_arm_auto(
         )
         action_step, _status_msg = arm_runner.get_action_at_time(time.time())
         if action_step is None:
+            if (
+                arm_orchestrator is not None
+                and getattr(arm_orchestrator, "resume_warmup_steps_remaining", 0) > 0
+                and not bool(state._arm_resume_wait_logged)
+            ):
+                runner_status = (
+                    arm_runner.debug_status()
+                    if arm_runner is not None and hasattr(arm_runner, "debug_status")
+                    else {}
+                )
+                print(
+                    "\n[ARM-VLM] Post-recovery waiting for fresh async action chunk: "
+                    f"runner_running={runner_status.get('running', False)} "
+                    f"has_chunk={runner_status.get('has_chunk', False)} "
+                    f"obs_ts={runner_status.get('latest_obs_timestamp', 0.0):.3f} "
+                    f"processed_ts={runner_status.get('last_processed_timestamp', 0.0):.3f}"
+                )
+                state._arm_resume_wait_logged = True
             # 没有新动作时保持当前位置，避免突然跳变
             action_step = robot_state.copy()
 
     if arm_orchestrator is not None:
         action_step = arm_orchestrator.limit_resume_action(action_step, robot_state)
+        if action_step is not None:
+            state._arm_resume_wait_logged = False
 
     # 2. 执行动作（使用平滑器）
     applied_action = None

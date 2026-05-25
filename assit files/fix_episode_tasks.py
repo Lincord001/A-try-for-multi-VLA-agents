@@ -5,11 +5,13 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from _script_paths import resolve_repo_path
+
 # ================= Config =================
 # Source dataset root. Only read from this folder.
-SOURCE_ROOT = "./demo_data_base_v7_5"
+SOURCE_ROOT = str(resolve_repo_path("./demo_data_base_v7_5"))
 # Target dataset root. If same as SOURCE_ROOT, edit in-place.
-TARGET_ROOT = "./demo_data_base_v7_5"
+TARGET_ROOT = str(resolve_repo_path("./demo_data_base_v7_5"))
 
 # If TARGET_ROOT exists and SOURCE_ROOT != TARGET_ROOT:
 # - True: delete target and recopy source

@@ -286,6 +286,19 @@ class AsyncInferenceRunner:
             self.chunk_id = 0
             self.last_processed_timestamp = 0
 
+    def debug_status(self):
+        """Return a compact snapshot for runtime debugging."""
+        with self.lock:
+            chunk = self.latest_action_chunk
+            return {
+                "running": bool(self.running),
+                "has_chunk": chunk is not None,
+                "chunk_len": 0 if chunk is None else int(chunk.shape[0]),
+                "current_step_index": int(self.current_step_index),
+                "latest_obs_timestamp": float(self.latest_obs_timestamp),
+                "last_processed_timestamp": float(self.last_processed_timestamp),
+            }
+
     def update_observation(self, images_dict, state, task, timestamp):
         """主线程调用：更新最新的观测数据。"""
         t0 = time.perf_counter()
