@@ -4,6 +4,10 @@
 
 当前仓库包含代码、MuJoCo 资产、LeRobot 格式数据集、拓扑图输出、VLM 检查记录和本地 checkpoint，因此整体体积较大。
 
+## 项目定位
+
+本项目为南方科技大学深港微电子学院 2026 届本科毕业设计相关工程代码。当前版本在原始 LeRobot MuJoCo 教程工程的基础上进行了较大规模扩展，重点从单一桌面抓取示例发展为面向移动操作任务的双智能体/双模式 VLA 仿真、数据采集、部署与任务编排系统。
+
 ## 功能概览
 
 - MuJoCo 仿真环境：OMY 机械臂、TurtleBot3 移动底盘、桌面、托盘、杯子等场景资产。
@@ -364,6 +368,27 @@ export DASHSCOPE_API_KEY="你的 DashScope API Key"
 ### 启动部署脚本后连接不上策略模型
 
 如果 `POLICY_SERVER_ENABLED = True`，先确认 `python -m deploy_v7_dual.policy_server` 已启动，并且 host、port、authkey 与 `deploy_v7_dual/config.py` 一致。
+
+## 项目来源与致谢
+
+本仓库最初基于 JeongEun Park / Jeongeun 的开源项目 **LeRobot Tutorial with MuJoCo** 进行开发。原项目提供了 MuJoCo + LeRobot 环境中的数据采集、ACT/PI0/SmolVLA 训练与部署教程，是本毕业设计工程的基础。
+
+在此基础上，本工程进一步扩展了：
+
+- arm/base 双模式控制与热切换；
+- TurtleBot3 移动底盘与 OMY 机械臂协同任务；
+- PI0 双模型部署、异步推理与本地 policy server；
+- 多阶段自动数据采集与 LeRobot 数据集管理；
+- Embodied-RAG 拓扑记忆、语义森林、自然语言目标检索与路径规划；
+- 自然语言任务拆解、串行任务队列、VLM verifier 和 execution tracker；
+- 面向毕业设计实验流程的数据清洗、可视化和分析辅助工具。
+
+同时感谢原始工程 README 中列出的相关开源资源：
+
+- ROBOTIS OMY 机械臂资产来自 `robotis_mujoco_menagerie`。
+- `mujoco_env/mujoco_parser.py` 修改自 `yet-another-mujoco-tutorial-v3`。
+- 项目参考了 Hugging Face LeRobot examples。
+- plate 和 mug 等物体资产来自 Objaverse。
 
 ## 开发约定
 
