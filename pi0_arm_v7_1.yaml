@@ -1,0 +1,39 @@
+dataset:
+  repo_id: omy_arm_data_v7_1   # <--- 对应 Arm 数据集的 ID (V4版本)
+  root: ./demo_data_arm_v7_1   # <--- 对应 Arm 数据集的本地路径 (V4版本)
+
+policy:
+  type: pi0
+  chunk_size: 64                # 🔥 V4.1: 从 20 改为 5（减少颤抖）
+  n_action_steps: 64            # 长序列训练：需与 chunk_size 保持一致，避免注意力 mask 维度不匹配
+  use_amp: false              # 如果显存够大(A100/4090)，可以设为 true 加速
+  attention_implementation: sdpa
+  scheduler_decay_steps: 50000  # 🔥 学习率衰减步数，应与 steps 保持一致
+  # pretrained_path 可以不设置，train_model.py 会优先读取 PALIGEMMA_PRETRAINED_PATH，
+  # 未设置时使用 Hugging Face 模型 ID: google/paligemma-3b-pt-224
+  # pretrained_path: ./PaliGemmaWeights/paligemma-3b-pt-224
+
+save_checkpoint: true
+output_dir: ./ckpt/pi0_arm/pretrained_model_arm_v7_1
+batch_size: 8                # 根据显存调整
+job_name: pi0_arm_v7_1
+resume: false
+seed: 42
+num_workers: 4
+steps: 50000                  
+
+eval_freq: -1
+log_freq: 50
+save_freq: 50000               
+save_by_freq: true            # 开关1：按 save_freq 周期保存（含最后一步）
+save_steps: [38850, 39450, 40100, 43500, 45800, 46150, 48900, 49450, 49900]   # 额外保存的固定步数（可按需修改）
+save_by_steps: true           # 开关2：按 save_steps 指定步数保存
+best_loss_checkpoint_range: [39000, 41000]  # 仅保留该区间内 loss 最低的 checkpoint
+save_best_in_range: false      # 开关3：区间内仅保留 loss 最低 checkpoint
+use_policy_training_preset: true
+
+wandb:
+  enable: true
+  project: omy_arm_project_v7  # 建议统一项目名
+  entity: "Tangyibo"
+  disable_artifact: true

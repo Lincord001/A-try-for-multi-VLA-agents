@@ -10,6 +10,7 @@
 
 # 第三步：保留根目录下的指定文件
 !*.py
+!pi0_*.yaml
 !README.md
 !requirements.txt
 

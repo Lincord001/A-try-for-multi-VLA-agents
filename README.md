@@ -2,7 +2,7 @@
 
 本工程是一个基于 MuJoCo、LeRobot 和 PI0 策略模型的移动操作仿真项目。项目同时支持机械臂 `arm` 与移动底盘 `base` 两类控制模式，覆盖仿真环境、数据采集、策略部署、RAG 导航、任务拆解、VLM 校验和执行轨迹记录等模块。
 
-当前仓库包含代码、MuJoCo 资产、LeRobot 格式数据集、拓扑图输出、VLM 检查记录和本地 checkpoint，因此整体体积较大。
+代码仓库主要保留工程代码、配置和轻量资源。训练数据、checkpoint、拓扑图输出等大文件可从本文“数据与模型说明”中的网盘链接下载。
 
 ## 项目定位
 
@@ -143,6 +143,52 @@ demo_data_base_test/
 ```text
 demo_data_arm_v7_1/
 demo_data_base_v7_6/
+```
+
+## 模型训练
+
+训练入口：
+
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh && conda activate vla_fresh
+python train_model.py --config_path=pi0_arm_v7_1.yaml
+```
+
+Base 模型训练：
+
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh && conda activate vla_fresh
+python train_model.py --config_path=pi0_base_v7_6.yaml
+```
+
+两份训练配置分别位于：
+
+```text
+pi0_arm_v7_1.yaml
+pi0_base_v7_6.yaml
+```
+
+默认训练配置使用的数据集和输出路径为：
+
+```text
+demo_data_arm_v7_1/                  # arm 7.1 训练数据集
+demo_data_base_v7_6/                 # base 7.6 训练数据集
+ckpt/pi0_arm/pretrained_model_arm_v7_1/
+ckpt/pi0_base/pretrained_model_base_v7_6/
+```
+
+训练所需的大文件，包括 `asset/` 场景资产、`demo_data_arm_v7_1/`、`demo_data_base_v7_6/`、已训练好的 arm/base checkpoint，以及训练 PI0 所需的 PaliGemma 权重，均可从“数据与模型说明”中的百度网盘链接下载。
+
+如果本机已经有 PaliGemma 权重，可以通过环境变量指定本地路径：
+
+```bash
+export PALIGEMMA_PRETRAINED_PATH="./PaliGemmaWeights/paligemma-3b-pt-224"
+```
+
+如果不设置该环境变量，`train_model.py` 默认使用 Hugging Face 模型 ID：
+
+```text
+google/paligemma-3b-pt-224
 ```
 
 ## 双模式部署
@@ -298,7 +344,16 @@ python record_execution_tracker_trace.py --help
 
 ## 数据与模型说明
 
-仓库中包含多组本地数据和 checkpoint：
+训练、部署和 RAG 相关的大文件已单独打包到网盘，包含训练数据、场景资产、checkpoint、拓扑图输出等运行所需资源：
+
+```text
+百度网盘：https://pan.baidu.com/s/1moSiJeqfHYVTdpFbvmmxGw?pwd=1234
+提取码：1234
+```
+
+下载后请将对应目录放回项目根目录，并确认以下路径与配置文件一致。
+
+项目中常用的大文件目录包括：
 
 ```text
 ckpt/pi0_arm/
