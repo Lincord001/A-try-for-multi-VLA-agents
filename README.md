@@ -191,6 +191,18 @@ export PALIGEMMA_PRETRAINED_PATH="./PaliGemmaWeights/paligemma-3b-pt-224"
 google/paligemma-3b-pt-224
 ```
 
+训练配置中还保留了几项已注释的 checkpoint 保存字段：
+
+```text
+save_by_freq
+save_steps
+save_by_steps
+best_loss_checkpoint_range
+save_best_in_range
+```
+
+这些是作者训练时为了节省磁盘空间、在指定 step 保存 checkpoint、或只保留某个区间内最低 loss checkpoint 使用的小工程 trick。不同 LeRobot 版本的 `TrainPipelineConfig` 不一定支持这些字段；如果训练启动时报 `not valid for TrainPipelineConfig`，保持这些字段注释即可使用标准 LeRobot 保存逻辑。
+
 ## 双模式部署
 
 部署入口：

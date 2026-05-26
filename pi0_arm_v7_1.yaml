@@ -24,12 +24,14 @@ steps: 50000
 
 eval_freq: -1
 log_freq: 50
-save_freq: 50000               
-save_by_freq: true            # 开关1：按 save_freq 周期保存（含最后一步）
-save_steps: [38850, 39450, 40100, 43500, 45800, 46150, 48900, 49450, 49900]   # 额外保存的固定步数（可按需修改）
-save_by_steps: true           # 开关2：按 save_steps 指定步数保存
-best_loss_checkpoint_range: [39000, 41000]  # 仅保留该区间内 loss 最低的 checkpoint
-save_best_in_range: false      # 开关3：区间内仅保留 loss 最低 checkpoint
+save_freq: 50000
+# 以下字段是作者训练时用于节省空间和挑选 checkpoint 的工程 trick。
+# 如果你的 LeRobot 配置解析报 "not valid for TrainPipelineConfig"，直接保持注释即可。
+# save_by_freq: true
+# save_steps: [38850, 39450, 40100, 43500, 45800, 46150, 48900, 49450, 49900]
+# save_by_steps: true
+# best_loss_checkpoint_range: [39000, 41000]
+# save_best_in_range: false
 use_policy_training_preset: true
 
 wandb:
